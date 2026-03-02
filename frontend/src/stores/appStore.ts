@@ -115,6 +115,7 @@ interface AppState {
   fetchConflicts: () => Promise<void>
   fetchEarthquakes: () => Promise<void>
   fetchWildfires: () => Promise<void>
+  fetchVessels: () => Promise<void>
   fetchMarkets: () => Promise<void>
   fetchCyberThreats: () => Promise<void>
   fetchInfrastructure: () => Promise<void>
@@ -156,12 +157,40 @@ export const useAppStore = create<AppState>((set, get) => ({
       get().fetchConflicts(),
       get().fetchEarthquakes(),
       get().fetchWildfires(),
+      get().fetchVessels(),
       get().fetchMarkets(),
       get().fetchCyberThreats(),
       get().fetchInfrastructure(),
       get().fetchRiskScores(),
     ])
     set({ isLoading: false })
+  },
+
+  // Fetch vessel tracking data
+  fetchVessels: async () => {
+    try {
+      const res = await fetch(`${API_BASE}/list-vessels`)
+      if (res.ok) {
+        const data = await res.json()
+        // Map response to expected format
+        const vessels = (data.vessels || []).map((v: any) => ({
+          mmsi: v.mmsi,
+          name: v.name || v.mmsi,
+          vessel_type: v.ship_type === 60 ? 'Passenger' : v.ship_type === 70 ? 'Cargo' : v.ship_type === 80 ? 'Tanker' : 'Other',
+          latitude: v.position?.latitude || v.latitude,
+          longitude: v.position?.longitude || v.longitude,
+          speed: v.speed || 0,
+          course: v.course || 0,
+          flag: v.flag_country || 'Unknown',
+        }))
+        set({
+          vessels,
+          stats: { ...get().stats, vessels: data.total || vessels.length },
+        })
+      }
+    } catch (e) {
+      console.error('Failed to fetch vessels:', e)
+    }
   },
 
   // Fetch conflict events from ACLED
