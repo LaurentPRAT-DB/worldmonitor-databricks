@@ -1,14 +1,21 @@
 """
 Lakebase (PostgreSQL) database connection pool with OAuth token refresh.
+Also supports reading from Unity Catalog for historical data.
 """
 
 import os
 import asyncio
+import aiohttp
 from typing import Optional, Any
 from contextlib import asynccontextmanager
 import asyncpg
 
-from .config import get_oauth_token, settings, IS_DATABRICKS_APP
+from .config import get_oauth_token, get_workspace_host, settings, IS_DATABRICKS_APP
+
+# Unity Catalog configuration for vessel history
+UC_CATALOG = os.environ.get("UC_CATALOG", "serverless_stable_3n0ihb_catalog")
+UC_SCHEMA = os.environ.get("UC_SCHEMA", "worldmonitor_dev")
+UC_VESSEL_HISTORY_TABLE = "vessel_positions_history"
 
 
 class DatabasePool:
@@ -353,37 +360,51 @@ async def get_vessel_route(mmsi: str, hours_back: int = 24) -> list[dict]:
 
 
 async def get_all_vessel_routes(hours_back: int = 24) -> dict[str, list[dict]]:
-    """Get position history for all vessels within the time range, grouped by MMSI."""
-    if db.is_demo_mode:
-        return {}
-    try:
-        rows = await db.fetch(
-            """
-            SELECT mmsi, name, latitude, longitude, speed, course, heading, destination,
-                   is_synthetic, recorded_at
-            FROM vessel_positions
-            WHERE recorded_at > NOW() - INTERVAL '1 hour' * $1
-            ORDER BY mmsi, recorded_at ASC
-            """,
-            hours_back
-        )
-        # Group by MMSI
-        routes: dict[str, list[dict]] = {}
-        for r in rows:
-            mmsi = r["mmsi"]
-            if mmsi not in routes:
-                routes[mmsi] = []
-            routes[mmsi].append({
-                "latitude": r["latitude"],
-                "longitude": r["longitude"],
-                "speed": r["speed"],
-                "course": r["course"],
-                "recorded_at": r["recorded_at"].isoformat() if r["recorded_at"] else None,
-            })
-        return routes
-    except Exception as e:
-        print(f"[db] Failed to get all vessel routes: {e}")
-        return {}
+    """Get position history for all vessels within the time range, grouped by MMSI.
+
+    Tries Lakebase first, falls back to Unity Catalog if Lakebase is unavailable
+    or returns empty results.
+    """
+    routes: dict[str, list[dict]] = {}
+
+    # Try Lakebase first
+    if not db.is_demo_mode:
+        try:
+            rows = await db.fetch(
+                """
+                SELECT mmsi, name, latitude, longitude, speed, course, heading, destination,
+                       is_synthetic, recorded_at
+                FROM vessel_positions
+                WHERE recorded_at > NOW() - INTERVAL '1 hour' * $1
+                ORDER BY mmsi, recorded_at ASC
+                """,
+                hours_back
+            )
+            # Group by MMSI
+            for r in rows:
+                mmsi = r["mmsi"]
+                if mmsi not in routes:
+                    routes[mmsi] = []
+                routes[mmsi].append({
+                    "latitude": r["latitude"],
+                    "longitude": r["longitude"],
+                    "speed": r["speed"],
+                    "course": r["course"],
+                    "recorded_at": r["recorded_at"].isoformat() if r["recorded_at"] else None,
+                })
+
+            if routes:
+                print(f"[db] Got {len(routes)} vessel routes from Lakebase")
+                return routes
+        except Exception as e:
+            print(f"[db] Failed to get vessel routes from Lakebase: {e}")
+
+    # Fall back to Unity Catalog
+    print(f"[db] Falling back to Unity Catalog for vessel routes")
+    routes = await get_vessel_routes_from_unity_catalog(hours_back)
+    if routes:
+        print(f"[db] Got {len(routes)} vessel routes from Unity Catalog")
+    return routes
 
 
 async def cleanup_old_vessel_positions(days_to_keep: int = 30) -> int:
@@ -399,3 +420,108 @@ async def cleanup_old_vessel_positions(days_to_keep: int = 30) -> int:
     except Exception as e:
         print(f"[db] Failed to cleanup old vessel positions: {e}")
         return 0
+
+
+# Unity Catalog query functions for vessel history
+
+async def query_unity_catalog(sql: str) -> list[dict]:
+    """Execute SQL query against Unity Catalog using Statement Execution API."""
+    host = get_workspace_host()
+    token = get_oauth_token()
+    warehouse_id = os.environ.get("DATABRICKS_WAREHOUSE_ID", "")
+
+    if not host or not token:
+        print("[db] Unity Catalog query failed: missing host or token")
+        return []
+
+    if not warehouse_id:
+        print("[db] Unity Catalog query failed: DATABRICKS_WAREHOUSE_ID not set")
+        return []
+
+    url = f"{host}/api/2.0/sql/statements"
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+
+    payload = {
+        "warehouse_id": warehouse_id,
+        "statement": sql,
+        "wait_timeout": "30s",
+        "disposition": "INLINE",
+        "format": "JSON_ARRAY",
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, headers=headers, json=payload) as resp:
+                if resp.status != 200:
+                    error_text = await resp.text()
+                    print(f"[db] Unity Catalog query failed: {resp.status} - {error_text}")
+                    return []
+
+                data = await resp.json()
+
+                # Check status
+                status = data.get("status", {}).get("state", "")
+                if status == "FAILED":
+                    error = data.get("status", {}).get("error", {})
+                    print(f"[db] Unity Catalog query failed: {error}")
+                    return []
+
+                # Parse results
+                manifest = data.get("manifest", {})
+                columns = [col["name"] for col in manifest.get("schema", {}).get("columns", [])]
+                result_data = data.get("result", {}).get("data_array", [])
+
+                # Convert to list of dicts
+                return [dict(zip(columns, row)) for row in result_data]
+
+    except Exception as e:
+        print(f"[db] Unity Catalog query error: {e}")
+        return []
+
+
+async def get_vessel_routes_from_unity_catalog(hours_back: int = 24) -> dict[str, list[dict]]:
+    """Get vessel routes from Unity Catalog table.
+
+    This is used when Lakebase doesn't have the historical data.
+    The data was generated by the generate_vessel_history notebook.
+    """
+    table = f"{UC_CATALOG}.{UC_SCHEMA}.{UC_VESSEL_HISTORY_TABLE}"
+
+    sql = f"""
+    SELECT mmsi, name, latitude, longitude, speed, course, recorded_at
+    FROM {table}
+    WHERE recorded_at > current_timestamp() - INTERVAL {hours_back} HOURS
+    ORDER BY mmsi, recorded_at ASC
+    """
+
+    rows = await query_unity_catalog(sql)
+
+    if not rows:
+        return {}
+
+    # Group by MMSI
+    routes: dict[str, list[dict]] = {}
+    for r in rows:
+        mmsi = r.get("mmsi", "")
+        if mmsi not in routes:
+            routes[mmsi] = []
+
+        recorded_at = r.get("recorded_at")
+        if isinstance(recorded_at, str):
+            recorded_at_str = recorded_at
+        else:
+            recorded_at_str = str(recorded_at) if recorded_at else None
+
+        routes[mmsi].append({
+            "latitude": float(r.get("latitude", 0)),
+            "longitude": float(r.get("longitude", 0)),
+            "speed": float(r.get("speed", 0)),
+            "course": float(r.get("course", 0)),
+            "recorded_at": recorded_at_str,
+        })
+
+    return routes

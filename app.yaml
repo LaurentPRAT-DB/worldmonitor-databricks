@@ -29,6 +29,16 @@ env:
   - name: PGUSER
     valueFrom: cache_db
 
+  # SQL Warehouse for Unity Catalog queries (vessel route history)
+  - name: DATABRICKS_WAREHOUSE_ID
+    value: b868e84cedeb4262
+
+  # Unity Catalog configuration for vessel history
+  - name: UC_CATALOG
+    value: serverless_stable_3n0ihb_catalog
+  - name: UC_SCHEMA
+    value: worldmonitor_dev
+
 resources:
   - name: cache_db
     database:
