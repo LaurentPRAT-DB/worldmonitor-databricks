@@ -16,7 +16,14 @@ from datetime import datetime
 from fastapi import APIRouter, Query
 from pydantic import BaseModel
 
-from ..db import cache_get, cache_set
+from ..db import (
+    cache_get,
+    cache_set,
+    save_vessel_positions_batch,
+    get_vessel_route,
+    get_all_vessel_routes,
+    db,
+)
 
 router = APIRouter()
 
@@ -127,6 +134,27 @@ class VesselSnapshot(BaseModel):
     data_source: str = "real"  # "synthetic" or "real"
 
 
+class RoutePoint(BaseModel):
+    latitude: float
+    longitude: float
+    speed: float = 0
+    course: float = 0
+    recorded_at: Optional[str] = None
+
+
+class VesselRoute(BaseModel):
+    mmsi: str
+    name: Optional[str] = None
+    route: list[RoutePoint]
+    total_points: int
+
+
+class VesselRoutesResponse(BaseModel):
+    routes: dict[str, list[RoutePoint]]
+    time_range_hours: int
+    total_vessels: int
+
+
 def _generate_synthetic_vessels() -> list[Vessel]:
     """Generate synthetic vessel data with slight position variations.
 
@@ -177,6 +205,7 @@ async def list_vessels(
     max_lon: Optional[float] = Query(None, ge=-180, le=180),
     ship_types: Optional[str] = Query(None, description="Comma-separated ship types"),
     limit: int = Query(1000, le=10000),
+    save_positions: bool = Query(True, description="Save positions to history for route tracking"),
 ):
     """List AIS vessel positions within a bounding box.
 
@@ -184,6 +213,8 @@ async def list_vessels(
     - data_source="synthetic" in response
     - MMSI prefix "999" on all vessels
     - is_synthetic=True on each vessel
+
+    Positions are saved to the database for route tracking (unless save_positions=false).
     """
     cache_key = f"vessels:{min_lat}:{max_lat}:{min_lon}:{max_lon}"
 
@@ -199,6 +230,28 @@ async def list_vessels(
         # TODO: Query real AIS data from Delta Lake or external API
         all_vessels = []
         data_source = "real"
+
+    # Save positions to database for route tracking
+    if save_positions and all_vessels and not db.is_demo_mode:
+        positions_to_save = [
+            {
+                "mmsi": v.mmsi,
+                "name": v.name,
+                "ship_type": v.ship_type,
+                "flag_country": v.flag_country,
+                "latitude": v.position.latitude,
+                "longitude": v.position.longitude,
+                "speed": v.speed,
+                "course": v.course,
+                "heading": v.heading,
+                "destination": v.destination,
+                "is_synthetic": v.is_synthetic,
+            }
+            for v in all_vessels
+        ]
+        saved_count = await save_vessel_positions_batch(positions_to_save)
+        if saved_count > 0:
+            print(f"[maritime] Saved {saved_count} vessel positions to history")
 
     # Filter by bounding box if specified
     filtered_vessels = all_vessels
@@ -291,3 +344,218 @@ async def get_vessel_snapshot():
 
     await cache_set(cache_key, result, 30)  # 30 second cache
     return VesselSnapshot(**result)
+
+
+@router.get("/vessel/{mmsi}/route", response_model=VesselRoute)
+async def get_vessel_route_endpoint(
+    mmsi: str,
+    hours: int = Query(24, ge=1, le=720, description="Hours of history to retrieve (max 30 days)"),
+):
+    """Get position history/route for a specific vessel.
+
+    Returns position history within the specified time range for route visualization.
+    """
+    route_data = await get_vessel_route(mmsi, hours)
+
+    # Get vessel name from most recent position
+    name = route_data[0]["name"] if route_data else None
+
+    route_points = [
+        RoutePoint(
+            latitude=p["latitude"],
+            longitude=p["longitude"],
+            speed=p["speed"],
+            course=p["course"],
+            recorded_at=p["recorded_at"],
+        )
+        for p in route_data
+    ]
+
+    return VesselRoute(
+        mmsi=mmsi,
+        name=name,
+        route=route_points,
+        total_points=len(route_points),
+    )
+
+
+@router.get("/routes", response_model=VesselRoutesResponse)
+async def get_all_routes(
+    hours: int = Query(24, ge=1, le=720, description="Hours of history to retrieve (max 30 days)"),
+):
+    """Get position history for all tracked vessels.
+
+    Returns routes for all vessels within the specified time range,
+    grouped by MMSI for efficient map rendering.
+    """
+    routes_data = await get_all_vessel_routes(hours)
+
+    routes = {
+        mmsi: [
+            RoutePoint(
+                latitude=p["latitude"],
+                longitude=p["longitude"],
+                speed=p["speed"],
+                course=p["course"],
+                recorded_at=p["recorded_at"],
+            )
+            for p in points
+        ]
+        for mmsi, points in routes_data.items()
+    }
+
+    return VesselRoutesResponse(
+        routes=routes,
+        time_range_hours=hours,
+        total_vessels=len(routes),
+    )
+
+
+class GenerateHistoryResponse(BaseModel):
+    status: str
+    message: str
+    vessels_processed: int
+    total_positions: int
+
+
+@router.post("/admin/generate-history", response_model=GenerateHistoryResponse)
+async def generate_vessel_history(
+    days: int = Query(30, ge=1, le=30, description="Days of history to generate"),
+    interval_hours: float = Query(4, ge=1, le=24, description="Hours between position records"),
+):
+    """Generate historical vessel position data for demo purposes.
+
+    This endpoint creates synthetic route history for all demo vessels,
+    enabling route visualization on the map.
+
+    WARNING: This will add data to the database. Only run once or clear
+    existing data first.
+    """
+    if db.is_demo_mode:
+        return GenerateHistoryResponse(
+            status="error",
+            message="Database not available (demo mode)",
+            vessels_processed=0,
+            total_positions=0,
+        )
+
+    from ..scripts.generate_vessel_history import generate_vessel_route
+
+    total_positions = 0
+    vessels_processed = 0
+
+    for idx, vessel in enumerate(SYNTHETIC_VESSELS):
+        synthetic_mmsi = f"999{idx:06d}"
+
+        # Generate route history
+        positions = generate_vessel_route(
+            current_lat=vessel["lat"],
+            current_lon=vessel["lon"],
+            destination=vessel["dest"],
+            speed_kts=vessel["speed"],
+            days=days,
+            interval_hours=interval_hours,
+        )
+
+        if positions:
+            try:
+                positions_to_save = [
+                    {
+                        "mmsi": synthetic_mmsi,
+                        "name": f"{vessel['name']} [DEMO]",
+                        "ship_type": vessel["ship_type"],
+                        "flag_country": vessel["flag"],
+                        "latitude": p["latitude"],
+                        "longitude": p["longitude"],
+                        "speed": p["speed"],
+                        "course": p["course"],
+                        "heading": int(p["course"]),
+                        "destination": vessel["dest"],
+                        "is_synthetic": True,
+                    }
+                    for p in positions
+                ]
+
+                # Save using batch function (but we need recorded_at, so use direct insert)
+                async with db.acquire() as conn:
+                    await conn.executemany(
+                        """
+                        INSERT INTO vessel_positions
+                        (mmsi, name, ship_type, flag_country, latitude, longitude,
+                         speed, course, heading, destination, is_synthetic, recorded_at)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                        """,
+                        [
+                            (
+                                synthetic_mmsi,
+                                f"{vessel['name']} [DEMO]",
+                                vessel["ship_type"],
+                                vessel["flag"],
+                                p["latitude"],
+                                p["longitude"],
+                                p["speed"],
+                                p["course"],
+                                int(p["course"]),
+                                vessel["dest"],
+                                True,
+                                p["recorded_at"],
+                            )
+                            for p in positions
+                        ]
+                    )
+                total_positions += len(positions)
+                vessels_processed += 1
+            except Exception as e:
+                print(f"[maritime] Error generating history for {vessel['name']}: {e}")
+
+    return GenerateHistoryResponse(
+        status="success",
+        message=f"Generated {days} days of history with {interval_hours}h intervals",
+        vessels_processed=vessels_processed,
+        total_positions=total_positions,
+    )
+
+
+class ClearHistoryResponse(BaseModel):
+    status: str
+    message: str
+    deleted_count: int
+
+
+@router.delete("/admin/clear-history", response_model=ClearHistoryResponse)
+async def clear_vessel_history(
+    synthetic_only: bool = Query(True, description="Only clear synthetic vessel data"),
+):
+    """Clear vessel position history from the database.
+
+    Use this before regenerating historical data to avoid duplicates.
+    """
+    if db.is_demo_mode:
+        return ClearHistoryResponse(
+            status="error",
+            message="Database not available (demo mode)",
+            deleted_count=0,
+        )
+
+    try:
+        if synthetic_only:
+            result = await db.execute(
+                "DELETE FROM vessel_positions WHERE is_synthetic = TRUE"
+            )
+        else:
+            result = await db.execute("DELETE FROM vessel_positions")
+
+        # Parse "DELETE N" response
+        deleted = int(result.split()[-1]) if result else 0
+
+        return ClearHistoryResponse(
+            status="success",
+            message=f"Cleared {'synthetic' if synthetic_only else 'all'} position history",
+            deleted_count=deleted,
+        )
+    except Exception as e:
+        return ClearHistoryResponse(
+            status="error",
+            message=str(e),
+            deleted_count=0,
+        )

@@ -2,7 +2,8 @@ import {
   Layers,
   Clock,
   RefreshCw,
-  Search
+  Search,
+  Route
 } from 'lucide-react'
 import { useState } from 'react'
 import { useAppStore } from '../stores/appStore'
@@ -31,7 +32,9 @@ export default function ControlPanel() {
     timeRange,
     setTimeRange,
     fetchAllData,
-    isLoading
+    isLoading,
+    showVesselRoutes,
+    toggleVesselRoutes
   } = useAppStore()
 
   const [showLayers, setShowLayers] = useState(false)
@@ -107,6 +110,25 @@ export default function ControlPanel() {
             </div>
           )}
         </div>
+
+        {/* Vessel Routes Toggle - only show when maritime layer is active */}
+        {selectedLayers.includes('maritime') && (
+          <button
+            onClick={toggleVesselRoutes}
+            className={`flex items-center gap-2 px-3 py-1.5 rounded-lg transition-colors ${
+              showVesselRoutes
+                ? 'bg-cyan-500/20 text-cyan-400'
+                : 'bg-wm-bg hover:bg-wm-border text-gray-400'
+            }`}
+            title="Show vessel route history"
+          >
+            <Route className="w-4 h-4" />
+            <span className="text-sm">Routes</span>
+            {showVesselRoutes && (
+              <span className="text-xs">ON</span>
+            )}
+          </button>
+        )}
 
         {/* Refresh */}
         <button

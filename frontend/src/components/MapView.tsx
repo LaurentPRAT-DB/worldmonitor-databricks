@@ -6,13 +6,17 @@ export default function MapView() {
   const mapContainer = useRef<HTMLDivElement>(null)
   const map = useRef<maplibregl.Map | null>(null)
   const markersRef = useRef<maplibregl.Marker[]>([])
+  const routeSourceId = 'vessel-routes'
+  const routeLayerId = 'vessel-routes-layer'
 
   const {
     conflicts,
     earthquakes,
     wildfires,
     vessels,
-    selectedLayers
+    vesselRoutes,
+    selectedLayers,
+    showVesselRoutes
   } = useAppStore()
 
   // Initialize map
@@ -159,6 +163,70 @@ export default function MapView() {
       })
     }
   }, [conflicts, earthquakes, wildfires, vessels, selectedLayers])
+
+  // Update vessel routes when data changes
+  useEffect(() => {
+    if (!map.current) return
+
+    const currentMap = map.current
+
+    // Wait for map to be loaded
+    const updateRoutes = () => {
+      // Remove existing layer and source
+      if (currentMap.getLayer(routeLayerId)) {
+        currentMap.removeLayer(routeLayerId)
+      }
+      if (currentMap.getSource(routeSourceId)) {
+        currentMap.removeSource(routeSourceId)
+      }
+
+      // Only add routes if maritime layer is selected and routes are enabled
+      if (!selectedLayers.includes('maritime') || !showVesselRoutes || Object.keys(vesselRoutes).length === 0) {
+        return
+      }
+
+      // Convert routes to GeoJSON LineString features
+      const features = Object.entries(vesselRoutes).map(([mmsi, points]) => ({
+        type: 'Feature' as const,
+        properties: { mmsi },
+        geometry: {
+          type: 'LineString' as const,
+          coordinates: points.map(p => [p.longitude, p.latitude])
+        }
+      }))
+
+      // Add GeoJSON source
+      currentMap.addSource(routeSourceId, {
+        type: 'geojson',
+        data: {
+          type: 'FeatureCollection',
+          features
+        }
+      })
+
+      // Add line layer
+      currentMap.addLayer({
+        id: routeLayerId,
+        type: 'line',
+        source: routeSourceId,
+        layout: {
+          'line-join': 'round',
+          'line-cap': 'round'
+        },
+        paint: {
+          'line-color': 'rgba(6, 182, 212, 0.5)',
+          'line-width': 2,
+          'line-opacity': 0.7
+        }
+      })
+    }
+
+    if (currentMap.loaded()) {
+      updateRoutes()
+    } else {
+      currentMap.on('load', updateRoutes)
+    }
+  }, [vesselRoutes, selectedLayers, showVesselRoutes])
 
   return (
     <div ref={mapContainer} className="w-full h-full" />

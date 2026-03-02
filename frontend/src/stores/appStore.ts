@@ -44,6 +44,18 @@ interface Vessel {
   flag: string
 }
 
+interface RoutePoint {
+  latitude: number
+  longitude: number
+  speed: number
+  course: number
+  recorded_at: string | null
+}
+
+interface VesselRoutes {
+  [mmsi: string]: RoutePoint[]
+}
+
 interface MarketQuote {
   symbol: string
   name: string
@@ -98,6 +110,7 @@ interface AppState {
   earthquakes: Earthquake[]
   wildfires: Wildfire[]
   vessels: Vessel[]
+  vesselRoutes: VesselRoutes
   marketQuotes: MarketQuote[]
   cyberThreats: CyberThreat[]
   serviceStatuses: ServiceStatus[]
@@ -109,6 +122,7 @@ interface AppState {
   selectedLayers: LayerType[]
   selectedCountry: string | null
   timeRange: number // days
+  showVesselRoutes: boolean
 
   // Actions
   fetchAllData: () => Promise<void>
@@ -116,6 +130,7 @@ interface AppState {
   fetchEarthquakes: () => Promise<void>
   fetchWildfires: () => Promise<void>
   fetchVessels: () => Promise<void>
+  fetchVesselRoutes: () => Promise<void>
   fetchMarkets: () => Promise<void>
   fetchCyberThreats: () => Promise<void>
   fetchInfrastructure: () => Promise<void>
@@ -123,6 +138,7 @@ interface AppState {
   toggleLayer: (layer: LayerType) => void
   setTimeRange: (days: number) => void
   setSelectedCountry: (code: string | null) => void
+  toggleVesselRoutes: () => void
 }
 
 const API_BASE = '/api'
@@ -133,6 +149,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   earthquakes: [],
   wildfires: [],
   vessels: [],
+  vesselRoutes: {},
   marketQuotes: [],
   cyberThreats: [],
   serviceStatuses: [],
@@ -149,6 +166,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   selectedLayers: ['conflicts', 'earthquakes', 'fires'],
   selectedCountry: null,
   timeRange: 7,
+  showVesselRoutes: false,
 
   // Fetch all data
   fetchAllData: async () => {
@@ -190,6 +208,23 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
     } catch (e) {
       console.error('Failed to fetch vessels:', e)
+    }
+  },
+
+  // Fetch vessel route history
+  fetchVesselRoutes: async () => {
+    try {
+      const { timeRange } = get()
+      // Convert days to hours for API
+      const hours = timeRange * 24
+      const res = await fetch(`${API_BASE}/routes?hours=${hours}`)
+      if (res.ok) {
+        const data = await res.json()
+        // data.routes is a dict of mmsi -> RoutePoint[]
+        set({ vesselRoutes: data.routes || {} })
+      }
+    } catch (e) {
+      console.error('Failed to fetch vessel routes:', e)
     }
   },
 
@@ -335,12 +370,26 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   // Set time range
   setTimeRange: (days: number) => {
-    set({ timeRange: days })
+    set({ timeRange: days, vesselRoutes: {} })  // Clear routes to refresh
     get().fetchAllData()
+    // If routes are enabled, fetch new routes with new time range
+    if (get().showVesselRoutes) {
+      get().fetchVesselRoutes()
+    }
   },
 
   // Set selected country
   setSelectedCountry: (code: string | null) => {
     set({ selectedCountry: code })
+  },
+
+  // Toggle vessel route display
+  toggleVesselRoutes: () => {
+    const { showVesselRoutes, vesselRoutes } = get()
+    if (!showVesselRoutes && Object.keys(vesselRoutes).length === 0) {
+      // Fetch routes if not already loaded
+      get().fetchVesselRoutes()
+    }
+    set({ showVesselRoutes: !showVesselRoutes })
   },
 }))

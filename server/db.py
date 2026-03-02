@@ -145,6 +145,29 @@ CREATE TABLE IF NOT EXISTS api_cache (
 CREATE INDEX IF NOT EXISTS idx_api_cache_expires ON api_cache(expires_at);
 """
 
+# Vessel position history table for route tracking
+VESSEL_POSITIONS_DDL = """
+CREATE TABLE IF NOT EXISTS vessel_positions (
+    id BIGSERIAL PRIMARY KEY,
+    mmsi TEXT NOT NULL,
+    name TEXT,
+    ship_type INTEGER DEFAULT 0,
+    flag_country TEXT,
+    latitude DOUBLE PRECISION NOT NULL,
+    longitude DOUBLE PRECISION NOT NULL,
+    speed DOUBLE PRECISION DEFAULT 0,
+    course DOUBLE PRECISION DEFAULT 0,
+    heading INTEGER DEFAULT 0,
+    destination TEXT,
+    is_synthetic BOOLEAN DEFAULT FALSE,
+    recorded_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_vessel_positions_mmsi ON vessel_positions(mmsi);
+CREATE INDEX IF NOT EXISTS idx_vessel_positions_recorded_at ON vessel_positions(recorded_at);
+CREATE INDEX IF NOT EXISTS idx_vessel_positions_mmsi_time ON vessel_positions(mmsi, recorded_at DESC);
+"""
+
 
 async def init_cache_table() -> None:
     """Initialize the cache table if Lakebase is available."""
@@ -156,6 +179,18 @@ async def init_cache_table() -> None:
         print("[db] Cache table initialized")
     except Exception as e:
         print(f"[db] Failed to initialize cache table: {e}")
+
+
+async def init_vessel_positions_table() -> None:
+    """Initialize the vessel positions table for route tracking."""
+    if not settings.is_lakebase_configured():
+        return
+    try:
+        async with db.acquire() as conn:
+            await conn.execute(VESSEL_POSITIONS_DDL)
+        print("[db] Vessel positions table initialized")
+    except Exception as e:
+        print(f"[db] Failed to initialize vessel positions table: {e}")
 
 
 async def cache_get(key: str) -> Optional[dict]:
@@ -210,4 +245,157 @@ async def cleanup_expired_cache() -> int:
         # Parse "DELETE N" response
         return int(result.split()[-1]) if result else 0
     except Exception:
+        return 0
+
+
+# Vessel position tracking functions
+
+async def save_vessel_position(
+    mmsi: str,
+    latitude: float,
+    longitude: float,
+    name: str = None,
+    ship_type: int = 0,
+    flag_country: str = None,
+    speed: float = 0,
+    course: float = 0,
+    heading: int = 0,
+    destination: str = None,
+    is_synthetic: bool = False,
+) -> bool:
+    """Save a vessel position to the history table."""
+    if db.is_demo_mode:
+        return False
+    try:
+        await db.execute(
+            """
+            INSERT INTO vessel_positions
+            (mmsi, name, ship_type, flag_country, latitude, longitude, speed, course, heading, destination, is_synthetic)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            """,
+            mmsi, name, ship_type, flag_country, latitude, longitude, speed, course, heading, destination, is_synthetic
+        )
+        return True
+    except Exception as e:
+        print(f"[db] Failed to save vessel position: {e}")
+        return False
+
+
+async def save_vessel_positions_batch(vessels: list[dict]) -> int:
+    """Save multiple vessel positions in a batch. Returns count of saved positions."""
+    if db.is_demo_mode or not vessels:
+        return 0
+    try:
+        async with db.acquire() as conn:
+            # Use executemany for batch insert
+            await conn.executemany(
+                """
+                INSERT INTO vessel_positions
+                (mmsi, name, ship_type, flag_country, latitude, longitude, speed, course, heading, destination, is_synthetic)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                """,
+                [
+                    (
+                        v.get("mmsi"),
+                        v.get("name"),
+                        v.get("ship_type", 0),
+                        v.get("flag_country"),
+                        v.get("latitude"),
+                        v.get("longitude"),
+                        v.get("speed", 0),
+                        v.get("course", 0),
+                        v.get("heading", 0),
+                        v.get("destination"),
+                        v.get("is_synthetic", False),
+                    )
+                    for v in vessels
+                ]
+            )
+        return len(vessels)
+    except Exception as e:
+        print(f"[db] Failed to save vessel positions batch: {e}")
+        return 0
+
+
+async def get_vessel_route(mmsi: str, hours_back: int = 24) -> list[dict]:
+    """Get position history for a specific vessel within the time range."""
+    if db.is_demo_mode:
+        return []
+    try:
+        rows = await db.fetch(
+            """
+            SELECT mmsi, name, latitude, longitude, speed, course, heading, destination,
+                   is_synthetic, recorded_at
+            FROM vessel_positions
+            WHERE mmsi = $1 AND recorded_at > NOW() - INTERVAL '1 hour' * $2
+            ORDER BY recorded_at ASC
+            """,
+            mmsi, hours_back
+        )
+        return [
+            {
+                "mmsi": r["mmsi"],
+                "name": r["name"],
+                "latitude": r["latitude"],
+                "longitude": r["longitude"],
+                "speed": r["speed"],
+                "course": r["course"],
+                "heading": r["heading"],
+                "destination": r["destination"],
+                "is_synthetic": r["is_synthetic"],
+                "recorded_at": r["recorded_at"].isoformat() if r["recorded_at"] else None,
+            }
+            for r in rows
+        ]
+    except Exception as e:
+        print(f"[db] Failed to get vessel route: {e}")
+        return []
+
+
+async def get_all_vessel_routes(hours_back: int = 24) -> dict[str, list[dict]]:
+    """Get position history for all vessels within the time range, grouped by MMSI."""
+    if db.is_demo_mode:
+        return {}
+    try:
+        rows = await db.fetch(
+            """
+            SELECT mmsi, name, latitude, longitude, speed, course, heading, destination,
+                   is_synthetic, recorded_at
+            FROM vessel_positions
+            WHERE recorded_at > NOW() - INTERVAL '1 hour' * $1
+            ORDER BY mmsi, recorded_at ASC
+            """,
+            hours_back
+        )
+        # Group by MMSI
+        routes: dict[str, list[dict]] = {}
+        for r in rows:
+            mmsi = r["mmsi"]
+            if mmsi not in routes:
+                routes[mmsi] = []
+            routes[mmsi].append({
+                "latitude": r["latitude"],
+                "longitude": r["longitude"],
+                "speed": r["speed"],
+                "course": r["course"],
+                "recorded_at": r["recorded_at"].isoformat() if r["recorded_at"] else None,
+            })
+        return routes
+    except Exception as e:
+        print(f"[db] Failed to get all vessel routes: {e}")
+        return {}
+
+
+async def cleanup_old_vessel_positions(days_to_keep: int = 30) -> int:
+    """Remove vessel positions older than specified days. Returns count of deleted rows."""
+    if db.is_demo_mode:
+        return 0
+    try:
+        result = await db.execute(
+            "DELETE FROM vessel_positions WHERE recorded_at < NOW() - INTERVAL '1 day' * $1",
+            days_to_keep
+        )
+        return int(result.split()[-1]) if result else 0
+    except Exception as e:
+        print(f"[db] Failed to cleanup old vessel positions: {e}")
         return 0
