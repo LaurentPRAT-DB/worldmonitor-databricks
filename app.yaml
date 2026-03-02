@@ -39,6 +39,12 @@ env:
   - name: UC_SCHEMA
     value: worldmonitor_dev
 
+  # Hybrid storage: Lakebase retention threshold (hours)
+  # Data older than this is served from Unity Catalog
+  # Data newer than this is served from Lakebase (faster)
+  - name: LAKEBASE_RETENTION_HOURS
+    value: "24"
+
 resources:
   - name: cache_db
     database:

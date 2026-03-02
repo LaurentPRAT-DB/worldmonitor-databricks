@@ -1,11 +1,17 @@
 """
 Lakebase (PostgreSQL) database connection pool with OAuth token refresh.
 Also supports reading from Unity Catalog for historical data.
+
+HYBRID ARCHITECTURE:
+- Lakebase: Real-time data (< LAKEBASE_RETENTION_HOURS) for fast UI interactions
+- Unity Catalog: Historical data (> LAKEBASE_RETENTION_HOURS) for cost-effective storage
+- API transparently merges both sources based on requested time range
 """
 
 import os
 import asyncio
 import aiohttp
+from datetime import datetime, timezone
 from typing import Optional, Any
 from contextlib import asynccontextmanager
 import asyncpg
@@ -16,6 +22,10 @@ from .config import get_oauth_token, get_workspace_host, settings, IS_DATABRICKS
 UC_CATALOG = os.environ.get("UC_CATALOG", "serverless_stable_3n0ihb_catalog")
 UC_SCHEMA = os.environ.get("UC_SCHEMA", "worldmonitor_dev")
 UC_VESSEL_HISTORY_TABLE = "vessel_positions_history"
+
+# Hybrid storage threshold: data older than this goes to Unity Catalog
+# Lakebase handles recent data for fast UI, Unity Catalog for historical queries
+LAKEBASE_RETENTION_HOURS = int(os.environ.get("LAKEBASE_RETENTION_HOURS", "24"))
 
 
 class DatabasePool:
@@ -362,13 +372,27 @@ async def get_vessel_route(mmsi: str, hours_back: int = 24) -> list[dict]:
 async def get_all_vessel_routes(hours_back: int = 24) -> dict[str, list[dict]]:
     """Get position history for all vessels within the time range, grouped by MMSI.
 
-    Tries Lakebase first, falls back to Unity Catalog if Lakebase is unavailable
-    or returns empty results.
+    HYBRID ARCHITECTURE:
+    - If hours_back <= LAKEBASE_RETENTION_HOURS: Query Lakebase only (fast)
+    - If hours_back > LAKEBASE_RETENTION_HOURS: Query both sources and merge
+      - Lakebase: recent data (last LAKEBASE_RETENTION_HOURS)
+      - Unity Catalog: historical data (older than LAKEBASE_RETENTION_HOURS)
+
+    This provides fast UI response for recent data while supporting long historical queries.
     """
     routes: dict[str, list[dict]] = {}
 
-    # Try Lakebase first
-    if not db.is_demo_mode:
+    # Determine query strategy based on time range
+    use_lakebase = not db.is_demo_mode
+    use_unity_catalog = hours_back > LAKEBASE_RETENTION_HOURS or db.is_demo_mode
+
+    lakebase_hours = min(hours_back, LAKEBASE_RETENTION_HOURS) if use_lakebase else 0
+    unity_catalog_hours = hours_back if use_unity_catalog else 0
+
+    print(f"[db] Hybrid query: hours_back={hours_back}, lakebase={lakebase_hours}h, uc={unity_catalog_hours}h")
+
+    # Query Lakebase for recent data
+    if use_lakebase and lakebase_hours > 0:
         try:
             rows = await db.fetch(
                 """
@@ -378,7 +402,7 @@ async def get_all_vessel_routes(hours_back: int = 24) -> dict[str, list[dict]]:
                 WHERE recorded_at > NOW() - INTERVAL '1 hour' * $1
                 ORDER BY mmsi, recorded_at ASC
                 """,
-                hours_back
+                lakebase_hours
             )
             # Group by MMSI
             for r in rows:
@@ -394,17 +418,64 @@ async def get_all_vessel_routes(hours_back: int = 24) -> dict[str, list[dict]]:
                 })
 
             if routes:
-                print(f"[db] Got {len(routes)} vessel routes from Lakebase")
-                return routes
+                print(f"[db] Got {len(routes)} vessel routes from Lakebase (recent {lakebase_hours}h)")
+
+                # If we only need Lakebase data, return now
+                if hours_back <= LAKEBASE_RETENTION_HOURS:
+                    return routes
         except Exception as e:
             print(f"[db] Failed to get vessel routes from Lakebase: {e}")
 
-    # Fall back to Unity Catalog
-    print(f"[db] Falling back to Unity Catalog for vessel routes")
-    routes = await get_vessel_routes_from_unity_catalog(hours_back)
-    if routes:
-        print(f"[db] Got {len(routes)} vessel routes from Unity Catalog")
+    # Query Unity Catalog for historical data (or as fallback)
+    if use_unity_catalog:
+        print(f"[db] Querying Unity Catalog for historical data ({unity_catalog_hours}h)")
+        uc_routes = await get_vessel_routes_from_unity_catalog(unity_catalog_hours)
+
+        if uc_routes:
+            print(f"[db] Got {len(uc_routes)} vessel routes from Unity Catalog")
+
+            # Merge Unity Catalog data with Lakebase data
+            routes = _merge_vessel_routes(uc_routes, routes)
+            print(f"[db] Merged routes: {len(routes)} vessels total")
+
     return routes
+
+
+def _merge_vessel_routes(
+    historical: dict[str, list[dict]],
+    recent: dict[str, list[dict]]
+) -> dict[str, list[dict]]:
+    """Merge historical (Unity Catalog) and recent (Lakebase) route data.
+
+    Historical data comes first, recent data appended, sorted by timestamp.
+    Deduplicates based on recorded_at timestamp.
+    """
+    merged: dict[str, list[dict]] = {}
+
+    # Get all MMSIs from both sources
+    all_mmsis = set(historical.keys()) | set(recent.keys())
+
+    for mmsi in all_mmsis:
+        hist_points = historical.get(mmsi, [])
+        recent_points = recent.get(mmsi, [])
+
+        # Combine and deduplicate by timestamp
+        seen_timestamps = set()
+        combined = []
+
+        for point in hist_points + recent_points:
+            ts = point.get("recorded_at")
+            if ts and ts not in seen_timestamps:
+                seen_timestamps.add(ts)
+                combined.append(point)
+
+        # Sort by timestamp
+        combined.sort(key=lambda p: p.get("recorded_at") or "")
+
+        if combined:
+            merged[mmsi] = combined
+
+    return merged
 
 
 async def cleanup_old_vessel_positions(days_to_keep: int = 30) -> int:
@@ -525,3 +596,175 @@ async def get_vessel_routes_from_unity_catalog(hours_back: int = 24) -> dict[str
         })
 
     return routes
+
+
+# =============================================================================
+# ARCHIVAL FUNCTIONS - Move old Lakebase data to Unity Catalog
+# =============================================================================
+
+async def get_lakebase_positions_for_archival(hours_old: int = 24) -> list[dict]:
+    """Get vessel positions from Lakebase that are older than threshold for archival.
+
+    Returns positions older than `hours_old` hours for migration to Unity Catalog.
+    """
+    if db.is_demo_mode:
+        return []
+
+    try:
+        rows = await db.fetch(
+            """
+            SELECT mmsi, name, ship_type, flag_country, latitude, longitude,
+                   speed, course, heading, destination, is_synthetic, recorded_at
+            FROM vessel_positions
+            WHERE recorded_at < NOW() - INTERVAL '1 hour' * $1
+            ORDER BY recorded_at ASC
+            LIMIT 10000
+            """,
+            hours_old
+        )
+        return [
+            {
+                "mmsi": r["mmsi"],
+                "name": r["name"],
+                "ship_type": r["ship_type"],
+                "flag_country": r["flag_country"],
+                "latitude": r["latitude"],
+                "longitude": r["longitude"],
+                "speed": r["speed"],
+                "course": r["course"],
+                "heading": r["heading"],
+                "destination": r["destination"],
+                "is_synthetic": r["is_synthetic"],
+                "recorded_at": r["recorded_at"].isoformat() if r["recorded_at"] else None,
+            }
+            for r in rows
+        ]
+    except Exception as e:
+        print(f"[db] Failed to get positions for archival: {e}")
+        return []
+
+
+async def delete_archived_positions(cutoff_hours: int = 24) -> int:
+    """Delete positions from Lakebase that have been archived to Unity Catalog.
+
+    Call this AFTER successfully archiving to Unity Catalog.
+    Returns count of deleted rows.
+    """
+    if db.is_demo_mode:
+        return 0
+
+    try:
+        result = await db.execute(
+            """
+            DELETE FROM vessel_positions
+            WHERE recorded_at < NOW() - INTERVAL '1 hour' * $1
+            """,
+            cutoff_hours
+        )
+        deleted = int(result.split()[-1]) if result else 0
+        print(f"[db] Deleted {deleted} archived positions from Lakebase")
+        return deleted
+    except Exception as e:
+        print(f"[db] Failed to delete archived positions: {e}")
+        return 0
+
+
+async def archive_to_unity_catalog(positions: list[dict]) -> bool:
+    """Archive vessel positions to Unity Catalog Delta table.
+
+    Uses SQL INSERT to append positions to the history table.
+    Returns True if successful.
+    """
+    if not positions:
+        return True
+
+    table = f"{UC_CATALOG}.{UC_SCHEMA}.{UC_VESSEL_HISTORY_TABLE}"
+
+    # Build INSERT statement with VALUES
+    values_list = []
+    for p in positions:
+        # Escape strings and handle nulls
+        mmsi = f"'{p['mmsi']}'" if p.get('mmsi') else 'NULL'
+        name = f"'{p['name'].replace(chr(39), chr(39)+chr(39))}'" if p.get('name') else 'NULL'
+        ship_type = p.get('ship_type', 0) or 0
+        flag = f"'{p['flag_country']}'" if p.get('flag_country') else 'NULL'
+        lat = p.get('latitude', 0)
+        lon = p.get('longitude', 0)
+        speed = p.get('speed', 0)
+        course = p.get('course', 0)
+        heading = p.get('heading', 0)
+        dest = f"'{p['destination'].replace(chr(39), chr(39)+chr(39))}'" if p.get('destination') else 'NULL'
+        synthetic = 'TRUE' if p.get('is_synthetic') else 'FALSE'
+        recorded = f"TIMESTAMP '{p['recorded_at']}'" if p.get('recorded_at') else 'current_timestamp()'
+
+        values_list.append(
+            f"({mmsi}, {name}, {ship_type}, {flag}, {lat}, {lon}, {speed}, {course}, {heading}, {dest}, {synthetic}, {recorded})"
+        )
+
+    # Batch inserts (max 100 per statement to avoid query size limits)
+    batch_size = 100
+    for i in range(0, len(values_list), batch_size):
+        batch = values_list[i:i + batch_size]
+        sql = f"""
+        INSERT INTO {table}
+        (mmsi, name, ship_type, flag_country, latitude, longitude, speed, course, heading, destination, is_synthetic, recorded_at)
+        VALUES {', '.join(batch)}
+        """
+
+        result = await query_unity_catalog(sql)
+        # INSERT returns empty result on success
+        if result is None:
+            print(f"[db] Failed to archive batch {i//batch_size + 1}")
+            return False
+
+    print(f"[db] Archived {len(positions)} positions to Unity Catalog")
+    return True
+
+
+async def run_archival_cycle() -> dict:
+    """Run a complete archival cycle: Lakebase -> Unity Catalog.
+
+    1. Get positions older than LAKEBASE_RETENTION_HOURS from Lakebase
+    2. Archive them to Unity Catalog
+    3. Delete archived positions from Lakebase
+
+    Returns summary dict with counts.
+    """
+    summary = {
+        "positions_found": 0,
+        "positions_archived": 0,
+        "positions_deleted": 0,
+        "success": False,
+        "error": None,
+    }
+
+    try:
+        # Step 1: Get old positions from Lakebase
+        positions = await get_lakebase_positions_for_archival(LAKEBASE_RETENTION_HOURS)
+        summary["positions_found"] = len(positions)
+
+        if not positions:
+            summary["success"] = True
+            print("[db] No positions to archive")
+            return summary
+
+        # Step 2: Archive to Unity Catalog
+        archived = await archive_to_unity_catalog(positions)
+        if not archived:
+            summary["error"] = "Failed to archive to Unity Catalog"
+            return summary
+
+        summary["positions_archived"] = len(positions)
+
+        # Step 3: Delete from Lakebase
+        deleted = await delete_archived_positions(LAKEBASE_RETENTION_HOURS)
+        summary["positions_deleted"] = deleted
+        summary["success"] = True
+
+        print(f"[db] Archival complete: {len(positions)} archived, {deleted} deleted")
+        return summary
+
+    except Exception as e:
+        summary["error"] = str(e)
+        print(f"[db] Archival cycle failed: {e}")
+        return summary

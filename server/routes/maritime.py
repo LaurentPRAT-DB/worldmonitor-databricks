@@ -559,3 +559,85 @@ async def clear_vessel_history(
             message=str(e),
             deleted_count=0,
         )
+
+
+# =============================================================================
+# HYBRID STORAGE ADMIN ENDPOINTS
+# =============================================================================
+
+class HybridStorageStatus(BaseModel):
+    """Status of the hybrid Lakebase/Unity Catalog storage."""
+    lakebase_enabled: bool
+    unity_catalog_enabled: bool
+    lakebase_retention_hours: int
+    lakebase_position_count: int = 0
+    unity_catalog_available: bool = False
+    message: str
+
+
+@router.get("/admin/storage-status", response_model=HybridStorageStatus)
+async def get_storage_status():
+    """Get status of hybrid storage (Lakebase + Unity Catalog).
+
+    Shows:
+    - Lakebase connection status and position count
+    - Unity Catalog availability
+    - Current retention threshold
+    """
+    from ..db import LAKEBASE_RETENTION_HOURS, query_unity_catalog, UC_CATALOG, UC_SCHEMA, UC_VESSEL_HISTORY_TABLE
+
+    status = HybridStorageStatus(
+        lakebase_enabled=not db.is_demo_mode,
+        unity_catalog_enabled=True,
+        lakebase_retention_hours=LAKEBASE_RETENTION_HOURS,
+        message="Hybrid storage operational",
+    )
+
+    # Check Lakebase position count
+    if not db.is_demo_mode:
+        try:
+            count = await db.fetchval("SELECT COUNT(*) FROM vessel_positions")
+            status.lakebase_position_count = count or 0
+        except Exception as e:
+            status.message = f"Lakebase query failed: {e}"
+
+    # Check Unity Catalog availability
+    try:
+        table = f"{UC_CATALOG}.{UC_SCHEMA}.{UC_VESSEL_HISTORY_TABLE}"
+        result = await query_unity_catalog(f"SELECT 1 FROM {table} LIMIT 1")
+        status.unity_catalog_available = result is not None
+    except Exception:
+        status.unity_catalog_available = False
+
+    return status
+
+
+class ArchivalResponse(BaseModel):
+    """Response from archival operation."""
+    status: str
+    positions_found: int
+    positions_archived: int
+    positions_deleted: int
+    message: str
+
+
+@router.post("/admin/archive-to-uc", response_model=ArchivalResponse)
+async def trigger_archival():
+    """Manually trigger archival from Lakebase to Unity Catalog.
+
+    Archives positions older than LAKEBASE_RETENTION_HOURS to Unity Catalog
+    and deletes them from Lakebase.
+
+    For production, run the archive_vessel_positions notebook as a scheduled job instead.
+    """
+    from ..db import run_archival_cycle
+
+    result = await run_archival_cycle()
+
+    return ArchivalResponse(
+        status="success" if result["success"] else "error",
+        positions_found=result["positions_found"],
+        positions_archived=result["positions_archived"],
+        positions_deleted=result["positions_deleted"],
+        message=result.get("error") or "Archival completed successfully",
+    )
