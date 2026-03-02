@@ -6,8 +6,11 @@ export default function MapView() {
   const mapContainer = useRef<HTMLDivElement>(null)
   const map = useRef<maplibregl.Map | null>(null)
   const markersRef = useRef<maplibregl.Marker[]>([])
+  const routePopupRef = useRef<maplibregl.Popup | null>(null)
   const routeSourceId = 'vessel-routes'
   const routeLayerId = 'vessel-routes-layer'
+  const arrowLayerId = 'vessel-routes-arrows'
+  const routePointsLayerId = 'vessel-routes-points'
 
   const {
     conflicts,
@@ -170,9 +173,42 @@ export default function MapView() {
 
     const currentMap = map.current
 
+    // Create arrow image if it doesn't exist
+    const createArrowImage = async () => {
+      if (!currentMap.hasImage('route-arrow')) {
+        // Create a larger, more visible arrow SVG with white outline
+        const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
+          <polygon points="4,10 24,16 4,22 10,16" fill="#06b6d4" stroke="#ffffff" stroke-width="2"/>
+        </svg>`
+        const svgBlob = new Blob([svg], { type: 'image/svg+xml' })
+        const url = URL.createObjectURL(svgBlob)
+
+        const img = new Image(32, 32)
+        img.src = url
+
+        await new Promise<void>((resolve) => {
+          img.onload = () => {
+            currentMap.addImage('route-arrow', img)
+            URL.revokeObjectURL(url)
+            resolve()
+          }
+          img.onerror = () => {
+            URL.revokeObjectURL(url)
+            resolve()
+          }
+        })
+      }
+    }
+
     // Wait for map to be loaded
-    const updateRoutes = () => {
-      // Remove existing layer and source
+    const updateRoutes = async () => {
+      // Remove existing layers and source
+      if (currentMap.getLayer(routePointsLayerId)) {
+        currentMap.removeLayer(routePointsLayerId)
+      }
+      if (currentMap.getLayer(arrowLayerId)) {
+        currentMap.removeLayer(arrowLayerId)
+      }
       if (currentMap.getLayer(routeLayerId)) {
         currentMap.removeLayer(routeLayerId)
       }
@@ -180,27 +216,70 @@ export default function MapView() {
         currentMap.removeSource(routeSourceId)
       }
 
+      // Clean up popup
+      if (routePopupRef.current) {
+        routePopupRef.current.remove()
+        routePopupRef.current = null
+      }
+
       // Only add routes if maritime layer is selected and routes are enabled
       if (!selectedLayers.includes('maritime') || !showVesselRoutes || Object.keys(vesselRoutes).length === 0) {
         return
       }
 
+      // Create arrow image
+      await createArrowImage()
+
+      // Create vessel name lookup by MMSI
+      const vesselNameMap: Record<string, string> = {}
+      vessels.forEach(v => {
+        vesselNameMap[v.mmsi] = v.name || v.mmsi
+      })
+
       // Convert routes to GeoJSON LineString features
-      const features = Object.entries(vesselRoutes).map(([mmsi, points]) => ({
+      const lineFeatures = Object.entries(vesselRoutes).map(([mmsi, points]) => ({
         type: 'Feature' as const,
-        properties: { mmsi },
+        properties: {
+          mmsi,
+          vesselName: vesselNameMap[mmsi] || mmsi
+        },
         geometry: {
           type: 'LineString' as const,
           coordinates: points.map(p => [p.longitude, p.latitude])
         }
       }))
 
-      // Add GeoJSON source
+      // Create point features for hover interaction (sample every few points for performance)
+      const pointFeatures: GeoJSON.Feature[] = []
+      Object.entries(vesselRoutes).forEach(([mmsi, points]) => {
+        const vesselName = vesselNameMap[mmsi] || mmsi
+        // Sample points - take every 3rd point to reduce density
+        points.forEach((p, idx) => {
+          if (idx % 3 === 0 || idx === points.length - 1) {
+            pointFeatures.push({
+              type: 'Feature',
+              properties: {
+                mmsi,
+                vesselName,
+                recordedAt: p.recorded_at,
+                speed: p.speed,
+                course: p.course
+              },
+              geometry: {
+                type: 'Point',
+                coordinates: [p.longitude, p.latitude]
+              }
+            })
+          }
+        })
+      })
+
+      // Add GeoJSON source with both lines and points
       currentMap.addSource(routeSourceId, {
         type: 'geojson',
         data: {
           type: 'FeatureCollection',
-          features
+          features: [...lineFeatures, ...pointFeatures]
         }
       })
 
@@ -209,6 +288,7 @@ export default function MapView() {
         id: routeLayerId,
         type: 'line',
         source: routeSourceId,
+        filter: ['==', '$type', 'LineString'],
         layout: {
           'line-join': 'round',
           'line-cap': 'round'
@@ -219,6 +299,88 @@ export default function MapView() {
           'line-opacity': 0.7
         }
       })
+
+      // Add arrow symbols along the route to show direction
+      currentMap.addLayer({
+        id: arrowLayerId,
+        type: 'symbol',
+        source: routeSourceId,
+        filter: ['==', '$type', 'LineString'],
+        layout: {
+          'symbol-placement': 'line',
+          'symbol-spacing': 80,
+          'icon-image': 'route-arrow',
+          'icon-size': 0.8,
+          'icon-allow-overlap': true,
+          'icon-ignore-placement': true,
+          'icon-rotation-alignment': 'map'
+        }
+      })
+
+      // Add invisible points layer for hover interaction
+      currentMap.addLayer({
+        id: routePointsLayerId,
+        type: 'circle',
+        source: routeSourceId,
+        filter: ['==', '$type', 'Point'],
+        paint: {
+          'circle-radius': 8,
+          'circle-color': 'transparent',
+          'circle-stroke-width': 0
+        }
+      })
+
+      // Create popup for hover
+      const popup = new maplibregl.Popup({
+        closeButton: false,
+        closeOnClick: false,
+        className: 'route-hover-popup'
+      })
+      routePopupRef.current = popup
+
+      // Add hover handlers
+      currentMap.on('mouseenter', routePointsLayerId, (e) => {
+        currentMap.getCanvas().style.cursor = 'pointer'
+
+        if (e.features && e.features.length > 0) {
+          const feature = e.features[0]
+          const coords = (feature.geometry as GeoJSON.Point).coordinates.slice() as [number, number]
+          const props = feature.properties as {
+            vesselName: string
+            recordedAt: string | null
+            speed: number
+            course: number
+          }
+
+          // Format the date
+          let dateStr = 'Unknown'
+          if (props.recordedAt) {
+            const date = new Date(props.recordedAt)
+            dateStr = date.toLocaleString('en-US', {
+              month: 'short',
+              day: 'numeric',
+              hour: '2-digit',
+              minute: '2-digit'
+            })
+          }
+
+          popup
+            .setLngLat(coords)
+            .setHTML(`
+              <div class="text-xs">
+                <div class="font-bold text-cyan-400">${props.vesselName}</div>
+                <div class="text-gray-300">${dateStr}</div>
+                <div class="text-gray-400">${props.speed?.toFixed(1) || '?'} kn · ${props.course?.toFixed(0) || '?'}°</div>
+              </div>
+            `)
+            .addTo(currentMap)
+        }
+      })
+
+      currentMap.on('mouseleave', routePointsLayerId, () => {
+        currentMap.getCanvas().style.cursor = ''
+        popup.remove()
+      })
     }
 
     if (currentMap.loaded()) {
@@ -226,7 +388,7 @@ export default function MapView() {
     } else {
       currentMap.on('load', updateRoutes)
     }
-  }, [vesselRoutes, selectedLayers, showVesselRoutes])
+  }, [vesselRoutes, vessels, selectedLayers, showVesselRoutes])
 
   return (
     <div ref={mapContainer} className="w-full h-full" />
