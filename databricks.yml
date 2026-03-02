@@ -1,0 +1,46 @@
+bundle:
+  name: worldmonitor
+
+sync:
+  include:
+    - "frontend/dist/**"
+
+include:
+  - resources/*.yml
+
+variables:
+  catalog:
+    default: "serverless_stable_3n0ihb_catalog"
+    description: "Unity Catalog name (workspace catalog)"
+  schema:
+    default: "worldmonitor"
+    description: "Schema name for World Monitor tables"
+  warehouse_id:
+    description: "SQL Warehouse ID for queries"
+    default: ""
+
+targets:
+  dev:
+    default: true
+    mode: development
+    workspace:
+      profile: FEVM_SERVERLESS_STABLE
+    variables:
+      catalog: "serverless_stable_3n0ihb_catalog"
+      schema: "worldmonitor_dev"
+
+  staging:
+    mode: development
+    workspace:
+      profile: FEVM_SERVERLESS_STABLE
+    variables:
+      catalog: "serverless_stable_3n0ihb_catalog"
+      schema: "worldmonitor_staging"
+
+  prod:
+    mode: production
+    workspace:
+      profile: FEVM_SERVERLESS_STABLE
+    variables:
+      catalog: "serverless_stable_3n0ihb_catalog"
+      schema: "worldmonitor"

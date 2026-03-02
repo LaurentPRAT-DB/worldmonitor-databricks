@@ -1,0 +1,322 @@
+import { useState } from 'react'
+import {
+  Crosshair,
+  Activity,
+  Flame,
+  Ship,
+  Plane,
+  ChevronDown,
+  ExternalLink
+} from 'lucide-react'
+import { useAppStore } from '../stores/appStore'
+import { format } from 'date-fns'
+
+type EventType = 'conflicts' | 'earthquakes' | 'fires' | 'maritime' | 'military'
+
+interface EventsPanelProps {
+  type: EventType
+}
+
+export default function EventsPanel({ type }: EventsPanelProps) {
+  const { conflicts, earthquakes, wildfires, vessels } = useAppStore()
+  const [expanded, setExpanded] = useState<string | null>(null)
+  const [sortBy, setSortBy] = useState<string>('date')
+
+  const config = {
+    conflicts: {
+      title: 'CONFLICT EVENTS',
+      icon: Crosshair,
+      color: 'text-red-400',
+      data: conflicts,
+    },
+    earthquakes: {
+      title: 'SEISMIC ACTIVITY',
+      icon: Activity,
+      color: 'text-yellow-400',
+      data: earthquakes,
+    },
+    fires: {
+      title: 'ACTIVE WILDFIRES',
+      icon: Flame,
+      color: 'text-orange-400',
+      data: wildfires,
+    },
+    maritime: {
+      title: 'VESSEL TRACKING',
+      icon: Ship,
+      color: 'text-cyan-400',
+      data: vessels,
+    },
+    military: {
+      title: 'MILITARY ACTIVITY',
+      icon: Plane,
+      color: 'text-purple-400',
+      data: [],
+    },
+  }
+
+  const { title, icon: Icon, color, data } = config[type]
+
+  return (
+    <div className="panel">
+      {/* Header */}
+      <div className="flex items-center justify-between p-4 border-b border-wm-border">
+        <div className="flex items-center gap-2">
+          <Icon className={`w-5 h-5 ${color}`} />
+          <h3 className="text-sm font-medium">{title}</h3>
+          <span className="text-xs bg-wm-bg px-2 py-0.5 rounded">{data.length}</span>
+        </div>
+        <select
+          value={sortBy}
+          onChange={(e) => setSortBy(e.target.value)}
+          className="text-xs bg-wm-bg border border-wm-border rounded px-2 py-1"
+        >
+          <option value="date">Recent</option>
+          <option value="severity">Severity</option>
+          <option value="location">Location</option>
+        </select>
+      </div>
+
+      {/* Event List */}
+      <div className="max-h-96 overflow-y-auto">
+        {type === 'conflicts' && (
+          <ConflictList
+            events={conflicts}
+            expanded={expanded}
+            setExpanded={setExpanded}
+          />
+        )}
+        {type === 'earthquakes' && (
+          <EarthquakeList
+            events={earthquakes}
+            expanded={expanded}
+            setExpanded={setExpanded}
+          />
+        )}
+        {type === 'fires' && (
+          <FireList fires={wildfires} />
+        )}
+        {type === 'maritime' && (
+          <VesselList vessels={vessels} />
+        )}
+      </div>
+    </div>
+  )
+}
+
+function ConflictList({
+  events,
+  expanded,
+  setExpanded
+}: {
+  events: any[]
+  expanded: string | null
+  setExpanded: (id: string | null) => void
+}) {
+  return (
+    <div className="divide-y divide-wm-border">
+      {events.slice(0, 50).map((event) => (
+        <div
+          key={event.id}
+          className="p-3 hover:bg-wm-bg/50 cursor-pointer"
+          onClick={() => setExpanded(expanded === event.id ? null : event.id)}
+        >
+          <div className="flex items-start justify-between">
+            <div className="flex-1">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-medium text-red-400">
+                  {event.event_type}
+                </span>
+                {event.fatalities > 0 && (
+                  <span className="text-xs bg-red-500/20 text-red-400 px-1.5 rounded">
+                    {event.fatalities} killed
+                  </span>
+                )}
+              </div>
+              <div className="text-sm mt-1">{event.location}</div>
+              <div className="text-xs text-gray-400 mt-0.5">
+                {event.country} - {event.event_date}
+              </div>
+            </div>
+            <ChevronDown
+              className={`w-4 h-4 text-gray-400 transition-transform ${
+                expanded === event.id ? 'rotate-180' : ''
+              }`}
+            />
+          </div>
+          {expanded === event.id && (
+            <div className="mt-3 pt-3 border-t border-wm-border text-xs text-gray-300">
+              <p>{event.notes}</p>
+              {event.actors && event.actors.length > 0 && (
+                <div className="mt-2">
+                  <span className="text-gray-400">Actors: </span>
+                  {event.actors.filter(Boolean).join(', ')}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function EarthquakeList({
+  events,
+  expanded,
+  setExpanded
+}: {
+  events: any[]
+  expanded: string | null
+  setExpanded: (id: string | null) => void
+}) {
+  return (
+    <div className="divide-y divide-wm-border">
+      {events.slice(0, 50).map((eq) => (
+        <div
+          key={eq.id}
+          className="p-3 hover:bg-wm-bg/50 cursor-pointer"
+          onClick={() => setExpanded(expanded === eq.id ? null : eq.id)}
+        >
+          <div className="flex items-start justify-between">
+            <div className="flex-1">
+              <div className="flex items-center gap-2">
+                <span className={`text-sm font-bold ${getMagnitudeColor(eq.magnitude)}`}>
+                  M{eq.magnitude?.toFixed(1)}
+                </span>
+                {eq.alert && (
+                  <span className={`text-xs px-1.5 rounded ${getAlertStyle(eq.alert)}`}>
+                    {eq.alert}
+                  </span>
+                )}
+              </div>
+              <div className="text-sm mt-1">{eq.place}</div>
+              <div className="text-xs text-gray-400 mt-0.5">
+                {eq.time ? format(new Date(eq.time), 'MMM d, HH:mm') : 'Unknown'} -
+                Depth: {eq.depth?.toFixed(1)} km
+              </div>
+            </div>
+            <ChevronDown
+              className={`w-4 h-4 text-gray-400 transition-transform ${
+                expanded === eq.id ? 'rotate-180' : ''
+              }`}
+            />
+          </div>
+          {expanded === eq.id && (
+            <div className="mt-3 pt-3 border-t border-wm-border text-xs">
+              <div className="grid grid-cols-2 gap-2 text-gray-400">
+                <div>Latitude: {eq.latitude?.toFixed(4)}</div>
+                <div>Longitude: {eq.longitude?.toFixed(4)}</div>
+                {eq.felt && <div>Felt reports: {eq.felt}</div>}
+                {eq.cdi && <div>CDI: {eq.cdi.toFixed(1)}</div>}
+              </div>
+              {eq.url && (
+                <a
+                  href={eq.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 mt-2 text-wm-accent hover:underline"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  View on USGS <ExternalLink className="w-3 h-3" />
+                </a>
+              )}
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function FireList({ fires }: { fires: any[] }) {
+  // Group fires by region (simplified)
+  const firesByRegion = fires.reduce((acc, fire) => {
+    const region = getRegion(fire.latitude, fire.longitude)
+    if (!acc[region]) acc[region] = []
+    acc[region].push(fire)
+    return acc
+  }, {} as Record<string, any[]>)
+
+  return (
+    <div className="p-3">
+      <div className="grid grid-cols-2 gap-3">
+        {(Object.entries(firesByRegion) as [string, any[]][])
+          .sort((a, b) => b[1].length - a[1].length)
+          .slice(0, 10)
+          .map(([region, regionFires]: [string, any[]]) => (
+            <div key={region} className="bg-wm-bg rounded p-2">
+              <div className="text-xs text-gray-400">{region}</div>
+              <div className="text-lg font-bold text-orange-400">
+                {regionFires.length}
+              </div>
+              <div className="text-xs text-gray-500">active fires</div>
+            </div>
+          ))}
+      </div>
+      <div className="mt-4 text-xs text-gray-400">
+        Total: {fires.length} fire detections in last 24h
+      </div>
+    </div>
+  )
+}
+
+function VesselList({ vessels }: { vessels: any[] }) {
+  return (
+    <div className="divide-y divide-wm-border">
+      {vessels.slice(0, 30).map((vessel) => (
+        <div key={vessel.mmsi} className="p-3 hover:bg-wm-bg/50">
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-sm font-medium">
+                {vessel.name || `MMSI: ${vessel.mmsi}`}
+              </div>
+              <div className="text-xs text-gray-400">
+                {vessel.vessel_type} - {vessel.flag}
+              </div>
+            </div>
+            <div className="text-right">
+              <div className="text-xs text-cyan-400">
+                {vessel.speed?.toFixed(1)} kn
+              </div>
+              <div className="text-xs text-gray-400">
+                {vessel.course?.toFixed(0)}°
+              </div>
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function getMagnitudeColor(mag: number): string {
+  if (mag >= 7) return 'text-red-500'
+  if (mag >= 6) return 'text-orange-500'
+  if (mag >= 5) return 'text-yellow-500'
+  if (mag >= 4) return 'text-yellow-400'
+  return 'text-green-400'
+}
+
+function getAlertStyle(alert: string): string {
+  switch (alert) {
+    case 'red':
+      return 'bg-red-500/20 text-red-400'
+    case 'orange':
+      return 'bg-orange-500/20 text-orange-400'
+    case 'yellow':
+      return 'bg-yellow-500/20 text-yellow-400'
+    default:
+      return 'bg-green-500/20 text-green-400'
+  }
+}
+
+function getRegion(lat: number, lon: number): string {
+  // Simplified region detection
+  if (lat > 50) return 'Northern Hemisphere'
+  if (lat < -30) return 'Southern Hemisphere'
+  if (lon > 100) return 'Asia-Pacific'
+  if (lon < -60) return 'Americas'
+  if (lon > 20 && lon < 60) return 'Middle East'
+  return 'Africa/Europe'
+}

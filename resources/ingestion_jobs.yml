@@ -1,0 +1,70 @@
+resources:
+  jobs:
+    worldmonitor_ingestion:
+      name: "[${bundle.target}] World Monitor - Data Ingestion"
+      description: "Scheduled ingestion of geopolitical data from external APIs into Delta Lake"
+
+      # Use serverless compute with required dependencies
+      environments:
+        - environment_key: "default"
+          spec:
+            client: "1"
+            dependencies:
+              - requests
+              - feedparser
+
+      tasks:
+        - task_key: "ingest_conflicts"
+          description: "Ingest ACLED conflict events"
+          spark_python_task:
+            python_file: ../server/spark_jobs.py
+            parameters:
+              - "--job=conflicts"
+          environment_key: "default"
+
+        - task_key: "ingest_earthquakes"
+          description: "Ingest USGS earthquake data"
+          depends_on:
+            - task_key: "ingest_conflicts"
+          spark_python_task:
+            python_file: ../server/spark_jobs.py
+            parameters:
+              - "--job=earthquakes"
+          environment_key: "default"
+
+        - task_key: "ingest_cyber_threats"
+          description: "Ingest cyber threat IOCs"
+          depends_on:
+            - task_key: "ingest_earthquakes"
+          spark_python_task:
+            python_file: ../server/spark_jobs.py
+            parameters:
+              - "--job=cyber"
+          environment_key: "default"
+
+        - task_key: "ingest_news"
+          description: "Ingest RSS news articles"
+          depends_on:
+            - task_key: "ingest_cyber_threats"
+          spark_python_task:
+            python_file: ../server/spark_jobs.py
+            parameters:
+              - "--job=news"
+          environment_key: "default"
+
+      schedule:
+        quartz_cron_expression: "0 0 */4 * * ?"  # Every 4 hours
+        timezone_id: "UTC"
+        pause_status: "PAUSED"  # Start paused, enable when ready
+
+      email_notifications:
+        on_failure:
+          - "${workspace.current_user.userName}"
+
+      tags:
+        project: "worldmonitor"
+        environment: "${bundle.target}"
+
+      permissions:
+        - level: CAN_VIEW
+          group_name: "users"

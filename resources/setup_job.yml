@@ -1,0 +1,28 @@
+resources:
+  jobs:
+    worldmonitor_setup:
+      name: "[${bundle.target}] World Monitor - Setup Tables"
+      description: "One-time setup job to create Unity Catalog tables"
+
+      # Use serverless compute
+      environments:
+        - environment_key: "default"
+          spec:
+            client: "1"
+
+      tasks:
+        - task_key: "create_tables"
+          description: "Create Unity Catalog tables"
+          spark_python_task:
+            python_file: ../setup/create_tables.py
+          environment_key: "default"
+
+      # No schedule - run manually
+      tags:
+        project: "worldmonitor"
+        environment: "${bundle.target}"
+        type: "setup"
+
+      permissions:
+        - level: CAN_MANAGE
+          user_name: "${workspace.current_user.userName}"

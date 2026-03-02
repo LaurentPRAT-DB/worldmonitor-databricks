@@ -1,0 +1,36 @@
+command:
+  - "python"
+  - "-m"
+  - "uvicorn"
+  - "app:app"
+  - "--host"
+  - "0.0.0.0"
+  - "--port"
+  - "8000"
+
+env:
+  # Foundation Model endpoint for AI features
+  - name: SERVING_ENDPOINT
+    value: databricks-claude-sonnet-4-5
+
+  # External API keys
+  - name: FRED_API_KEY
+    value: c762eaa3194c7a53517a0a0e319b6a25
+  - name: FINNHUB_API_KEY
+    value: d6is6npr01qleu95bkegd6is6npr01qleu95bkf0
+
+  # Lakebase database connection (auto-populated from resource)
+  - name: PGHOST
+    valueFrom: cache_db
+  - name: PGPORT
+    valueFrom: cache_db
+  - name: PGDATABASE
+    valueFrom: cache_db
+  - name: PGUSER
+    valueFrom: cache_db
+
+resources:
+  - name: cache_db
+    database:
+      name: worldmonitor-cache
+      permission: CAN_CONNECT

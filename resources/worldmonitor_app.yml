@@ -1,0 +1,6 @@
+resources:
+  apps:
+    worldmonitor_app:
+      name: worldmonitor-${bundle.target}
+      description: "World Monitor - Real-time geopolitical intelligence dashboard"
+      source_code_path: ..
