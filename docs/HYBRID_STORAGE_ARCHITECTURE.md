@@ -4,34 +4,25 @@
 
 World Monitor uses a hybrid storage architecture to optimize for both **fast UI interactions** (real-time data) and **cost-effective historical queries** (analytics workloads).
 
-```
-                              USER REQUEST
-                                   │
-                                   ▼
-                         ┌─────────────────┐
-                         │  FastAPI Backend │
-                         │    /api/routes   │
-                         └────────┬─────────┘
-                                  │
-                    ┌─────────────┴─────────────┐
-                    │   Time-based Routing      │
-                    │  hours_back <= 24h?       │
-                    └─────────────┬─────────────┘
-                                  │
-              ┌───────────────────┼───────────────────┐
-              │                   │                   │
-              ▼                   ▼                   ▼
-    ┌─────────────────┐ ┌─────────────────┐ ┌─────────────────┐
-    │    Lakebase     │ │     MERGE       │ │  Unity Catalog  │
-    │  (PostgreSQL)   │ │  Both Sources   │ │    (Delta)      │
-    │   < 24 hours    │ │                 │ │   > 24 hours    │
-    └─────────────────┘ └─────────────────┘ └─────────────────┘
-           │                                        │
-           │         Recent + Historical            │
-           └──────────────────┬─────────────────────┘
-                              │
-                              ▼
-                         API Response
+```mermaid
+flowchart TD
+    A[User Request] --> B[FastAPI Backend<br/>/api/routes]
+    B --> C{Time-based Routing<br/>hours_back <= 24h?}
+
+    C -->|Yes| D[Lakebase<br/>PostgreSQL<br/>< 24 hours]
+    C -->|No| E[Query Both Sources]
+
+    E --> D
+    E --> F[Unity Catalog<br/>Delta<br/>> 24 hours]
+
+    D --> G[Merge & Deduplicate]
+    F --> G
+
+    G --> H[API Response]
+
+    style D fill:#4CAF50,color:#fff
+    style F fill:#2196F3,color:#fff
+    style G fill:#FF9800,color:#fff
 ```
 
 ---
@@ -53,75 +44,58 @@ World Monitor uses a hybrid storage architecture to optimize for both **fast UI 
 
 ### 1. Real-Time Ingestion (Lakebase)
 
-```
-AIS Data Source
-       │
-       ▼
-POST /api/list-vessels (save_positions=true)
-       │
-       ▼
-┌─────────────────────────────────────┐
-│          Lakebase                   │
-│    vessel_positions table           │
-│  (rolling 24-hour window)           │
-└─────────────────────────────────────┘
+```mermaid
+flowchart TD
+    A[AIS Data Source] --> B[POST /api/list-vessels<br/>save_positions=true]
+    B --> C[(Lakebase<br/>vessel_positions table<br/>rolling 24-hour window)]
+
+    style C fill:#4CAF50,color:#fff
 ```
 
 ### 2. Historical Query (Hybrid)
 
-```
-GET /api/routes?hours=168 (7 days)
-       │
-       ▼
-┌─────────────────────────────────────┐
-│     Time-Based Query Router         │
-│  if hours <= 24: Lakebase only      │
-│  if hours > 24: Lakebase + UC       │
-└─────────────────────────────────────┘
-       │
-       ├──────────────────────────────┐
-       ▼                              ▼
-┌─────────────────┐         ┌─────────────────┐
-│   Lakebase      │         │ Unity Catalog   │
-│  Recent 24h     │         │  Full 168h      │
-└─────────────────┘         └─────────────────┘
-       │                              │
-       └──────────┬───────────────────┘
-                  ▼
-         ┌─────────────────┐
-         │  Merge & Dedup  │
-         │  Sort by time   │
-         └─────────────────┘
-                  │
-                  ▼
-           API Response
+```mermaid
+flowchart TD
+    A[GET /api/routes?hours=168<br/>7 days] --> B{Time-Based Router}
+
+    B -->|hours <= 24| C[(Lakebase<br/>Recent 24h)]
+    B -->|hours > 24| D[Query Both]
+
+    D --> C
+    D --> E[(Unity Catalog<br/>Full 168h)]
+
+    C --> F[Merge & Dedup<br/>Sort by time]
+    E --> F
+
+    F --> G[API Response]
+
+    style C fill:#4CAF50,color:#fff
+    style E fill:#2196F3,color:#fff
+    style F fill:#FF9800,color:#fff
 ```
 
 ### 3. Archival (Daily Job)
 
-```
-┌─────────────────────────────────────┐
-│     Scheduled Databricks Job        │
-│  notebooks/archive_vessel_positions │
-└─────────────────────────────────────┘
-       │
-       ▼
-┌─────────────────┐
-│   Lakebase      │──── SELECT WHERE recorded_at < NOW() - 24h
-│  (source)       │
-└─────────────────┘
-       │
-       ▼
-┌─────────────────┐
-│ Unity Catalog   │──── INSERT INTO vessel_positions_history
-│  (destination)  │
-└─────────────────┘
-       │
-       ▼
-┌─────────────────┐
-│   Lakebase      │──── DELETE WHERE recorded_at < NOW() - 24h
-│  (cleanup)      │
-└─────────────────┘
+```mermaid
+flowchart TD
+    A[Scheduled Databricks Job<br/>notebooks/archive_vessel_positions] --> B
+
+    subgraph Step1 [Step 1: Extract]
+        B[(Lakebase)] -->|SELECT WHERE<br/>recorded_at < NOW - 24h| C[Old Positions]
+    end
+
+    subgraph Step2 [Step 2: Load]
+        C -->|INSERT INTO<br/>vessel_positions_history| D[(Unity Catalog)]
+    end
+
+    subgraph Step3 [Step 3: Cleanup]
+        D --> E[(Lakebase)]
+        E -->|DELETE WHERE<br/>recorded_at < NOW - 24h| F[Done]
+    end
+
+    style B fill:#4CAF50,color:#fff
+    style D fill:#2196F3,color:#fff
+    style E fill:#4CAF50,color:#fff
 ```
 
 ---
