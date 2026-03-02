@@ -29,7 +29,7 @@ env:
   - name: PGUSER
     valueFrom: cache_db
 
-  # SQL Warehouse for Unity Catalog queries (vessel route history)
+  # SQL Warehouse ID for Unity Catalog queries
   - name: DATABRICKS_WAREHOUSE_ID
     value: b868e84cedeb4262
 
@@ -44,3 +44,7 @@ resources:
     database:
       name: worldmonitor-cache
       permission: CAN_CONNECT
+  - name: sql_warehouse
+    sql_warehouse:
+      name: "Serverless Starter Warehouse"
+      permission: CAN_USE
