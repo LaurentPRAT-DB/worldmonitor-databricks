@@ -21,13 +21,13 @@ env:
 
   # Lakebase database connection (auto-populated from resource)
   - name: PGHOST
-    valueFrom: cache_db
+    valueFrom: cache_db.host
   - name: PGPORT
-    valueFrom: cache_db
+    valueFrom: cache_db.port
   - name: PGDATABASE
-    valueFrom: cache_db
+    valueFrom: cache_db.database
   - name: PGUSER
-    valueFrom: cache_db
+    valueFrom: cache_db.user
 
   # SQL Warehouse ID for Unity Catalog queries
   - name: DATABRICKS_WAREHOUSE_ID
