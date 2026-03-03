@@ -14,23 +14,42 @@ import {
   Menu
 } from 'lucide-react'
 import { useState } from 'react'
+import { useAppStore } from '../stores/appStore'
+
+type LayerType = 'conflicts' | 'earthquakes' | 'fires' | 'maritime' | 'military' | 'climate'
 
 const navItems = [
-  { path: '/', icon: Globe, label: 'Overview', color: 'text-blue-400' },
-  { path: '/conflicts', icon: Crosshair, label: 'Conflicts', color: 'text-red-400' },
-  { path: '/earthquakes', icon: Activity, label: 'Seismic', color: 'text-yellow-400' },
-  { path: '/fires', icon: Flame, label: 'Wildfires', color: 'text-orange-400' },
-  { path: '/maritime', icon: Ship, label: 'Maritime', color: 'text-cyan-400' },
-  { path: '/military', icon: Plane, label: 'Military', color: 'text-purple-400' },
-  { path: '/markets', icon: TrendingUp, label: 'Markets', color: 'text-green-400' },
-  { path: '/cyber', icon: Shield, label: 'Cyber', color: 'text-pink-400' },
-  { path: '/infrastructure', icon: Wifi, label: 'Infra', color: 'text-indigo-400' },
-  { path: '/intel', icon: Brain, label: 'Intel', color: 'text-amber-400' },
+  { path: '/', icon: Globe, label: 'Overview', color: 'text-blue-400', layer: 'overview' as string },
+  { path: '/conflicts', icon: Crosshair, label: 'Conflicts', color: 'text-red-400', layer: 'conflicts' as LayerType },
+  { path: '/earthquakes', icon: Activity, label: 'Seismic', color: 'text-yellow-400', layer: 'earthquakes' as LayerType },
+  { path: '/fires', icon: Flame, label: 'Wildfires', color: 'text-orange-400', layer: 'fires' as LayerType },
+  { path: '/maritime', icon: Ship, label: 'Maritime', color: 'text-cyan-400', layer: 'maritime' as LayerType },
+  { path: '/military', icon: Plane, label: 'Military', color: 'text-purple-400', layer: 'military' as LayerType },
+  { path: '/markets', icon: TrendingUp, label: 'Markets', color: 'text-green-400', layer: undefined },
+  { path: '/cyber', icon: Shield, label: 'Cyber', color: 'text-pink-400', layer: undefined },
+  { path: '/infrastructure', icon: Wifi, label: 'Infra', color: 'text-indigo-400', layer: undefined },
+  { path: '/intel', icon: Brain, label: 'Intel', color: 'text-amber-400', layer: undefined },
 ]
 
 export default function Sidebar() {
   const location = useLocation()
   const [collapsed, setCollapsed] = useState(false)
+  const setActiveLayer = useAppStore((state) => state.setActiveLayer)
+
+  const handleNavClick = (layer: string | LayerType | undefined) => {
+    // Automatically enable the associated layer when navigating
+    // For Overview, show default layers
+    // For specific data pages with map layers, show only that layer
+    // For pages without map layers (Markets, Cyber, etc.), don't change layers
+    if (layer === 'overview') {
+      // Overview: restore default layers
+      setActiveLayer(null)
+    } else if (layer && layer !== undefined) {
+      // Specific layer page: show only that layer
+      setActiveLayer(layer as LayerType)
+    }
+    // Items without layers (Markets, Cyber, Intel, Infra) don't affect map
+  }
 
   return (
     <aside className={`${collapsed ? 'w-16' : 'w-56'} bg-wm-panel border-r border-wm-border flex flex-col transition-all duration-200`}>
@@ -59,6 +78,7 @@ export default function Sidebar() {
               <li key={item.path}>
                 <Link
                   to={item.path}
+                  onClick={() => handleNavClick(item.layer)}
                   className={`flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all ${
                     isActive
                       ? 'bg-wm-accent/20 text-white'

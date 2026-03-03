@@ -136,6 +136,7 @@ interface AppState {
   fetchInfrastructure: () => Promise<void>
   fetchRiskScores: () => Promise<void>
   toggleLayer: (layer: LayerType) => void
+  setActiveLayer: (layer: LayerType | null) => void
   setTimeRange: (days: number) => void
   setSelectedCountry: (code: string | null) => void
   toggleVesselRoutes: () => void
@@ -387,6 +388,17 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({ selectedLayers: selectedLayers.filter((l) => l !== layer) })
     } else {
       set({ selectedLayers: [...selectedLayers, layer] })
+    }
+  },
+
+  // Set active layer (enables only that layer, used by navigation)
+  setActiveLayer: (layer: LayerType | null) => {
+    if (layer === null) {
+      // Overview: show default layers
+      set({ selectedLayers: ['conflicts', 'earthquakes', 'fires'] })
+    } else {
+      // Single view: show only that layer
+      set({ selectedLayers: [layer] })
     }
   },
 
