@@ -149,7 +149,7 @@ def ingest_usgs_earthquakes(min_magnitude: float = 2.5, days_back: int = 7):
         print("No USGS earthquake data to ingest")
         return
 
-    # Flatten GeoJSON features
+    # Flatten GeoJSON features with explicit type casting
     records = []
     for f in features:
         props = f.get("properties", {})
@@ -157,23 +157,43 @@ def ingest_usgs_earthquakes(min_magnitude: float = 2.5, days_back: int = 7):
         records.append({
             "event_id": f.get("id"),
             "time": datetime.fromtimestamp(props.get("time", 0) / 1000),
-            "latitude": coords[1],
-            "longitude": coords[0],
-            "depth": coords[2],
-            "magnitude": props.get("mag"),
+            "latitude": float(coords[1]) if coords[1] is not None else 0.0,
+            "longitude": float(coords[0]) if coords[0] is not None else 0.0,
+            "depth": float(coords[2]) if coords[2] is not None else 0.0,
+            "magnitude": float(props.get("mag")) if props.get("mag") is not None else None,
             "magnitude_type": props.get("magType"),
             "place": props.get("place"),
             "status": props.get("status"),
             "tsunami": bool(props.get("tsunami")),
-            "felt": props.get("felt"),
-            "cdi": props.get("cdi"),
-            "mmi": props.get("mmi"),
+            "felt": int(props.get("felt")) if props.get("felt") is not None else None,
+            "cdi": float(props.get("cdi")) if props.get("cdi") is not None else None,
+            "mmi": float(props.get("mmi")) if props.get("mmi") is not None else None,
             "alert": props.get("alert"),
             "url": props.get("url"),
             "detail_url": props.get("detail"),
         })
 
-    df = spark.createDataFrame(records)
+    # Define explicit schema to avoid type inference issues
+    from pyspark.sql.types import StructType, StructField, StringType, TimestampType, DoubleType, BooleanType, IntegerType
+    schema = StructType([
+        StructField("event_id", StringType(), True),
+        StructField("time", TimestampType(), True),
+        StructField("latitude", DoubleType(), True),
+        StructField("longitude", DoubleType(), True),
+        StructField("depth", DoubleType(), True),
+        StructField("magnitude", DoubleType(), True),
+        StructField("magnitude_type", StringType(), True),
+        StructField("place", StringType(), True),
+        StructField("status", StringType(), True),
+        StructField("tsunami", BooleanType(), True),
+        StructField("felt", IntegerType(), True),
+        StructField("cdi", DoubleType(), True),
+        StructField("mmi", DoubleType(), True),
+        StructField("alert", StringType(), True),
+        StructField("url", StringType(), True),
+        StructField("detail_url", StringType(), True),
+    ])
+    df = spark.createDataFrame(records, schema=schema)
     df = df.withColumn("ingested_at", current_timestamp())
 
     # Merge into Delta table
@@ -329,7 +349,23 @@ def ingest_rss_news(feeds: dict[str, str]):
             print(f"Error parsing {source}: {e}")
 
     if records:
-        df = spark.createDataFrame(records)
+        # Define explicit schema to avoid type inference issues with None/empty values
+        from pyspark.sql.types import StructType, StructField, StringType, TimestampType, ArrayType, DoubleType
+        schema = StructType([
+            StructField("article_id", StringType(), True),
+            StructField("title", StringType(), True),
+            StructField("link", StringType(), True),
+            StructField("source", StringType(), True),
+            StructField("category", StringType(), True),
+            StructField("published_at", TimestampType(), True),
+            StructField("summary", StringType(), True),
+            StructField("full_text", StringType(), True),
+            StructField("image_url", StringType(), True),
+            StructField("tags", ArrayType(StringType()), True),
+            StructField("entities", ArrayType(StringType()), True),
+            StructField("sentiment", DoubleType(), True),
+        ])
+        df = spark.createDataFrame(records, schema=schema)
         df = df.withColumn("ingested_at", current_timestamp())
 
         # Merge to deduplicate
@@ -394,7 +430,21 @@ def ingest_cyber_threats(days_back: int = 7):
             })
 
     if records:
-        df = spark.createDataFrame(records)
+        # Define explicit schema to avoid type inference issues
+        from pyspark.sql.types import StructType, StructField, StringType, TimestampType, ArrayType, IntegerType
+        schema = StructType([
+            StructField("ioc_id", StringType(), True),
+            StructField("ioc_type", StringType(), True),
+            StructField("ioc_value", StringType(), True),
+            StructField("threat_type", StringType(), True),
+            StructField("malware_family", StringType(), True),
+            StructField("confidence", IntegerType(), True),
+            StructField("first_seen", TimestampType(), True),
+            StructField("last_seen", TimestampType(), True),
+            StructField("source", StringType(), True),
+            StructField("tags", ArrayType(StringType()), True),
+        ])
+        df = spark.createDataFrame(records, schema=schema)
         df = df.withColumn("ingested_at", current_timestamp())
 
         df.createOrReplaceTempView("cyber_staging")
