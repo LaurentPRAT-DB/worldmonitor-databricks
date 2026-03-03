@@ -1,5 +1,10 @@
 """
 Market API endpoints - Stock quotes, crypto, commodities, ETFs.
+
+STORAGE PATTERN: Lakebase-first for quote history
+- Current quotes fetched from APIs and persisted to Lakebase
+- Historical data available for time-based navigation
+- 24-hour retention in Lakebase
 """
 
 from typing import Optional
@@ -9,7 +14,15 @@ from pydantic import BaseModel
 import httpx
 
 from ..config import settings
-from ..db import cache_get, cache_set
+from ..db import (
+    cache_get,
+    cache_set,
+    db,
+    save_market_quotes_batch,
+    get_market_quotes_from_lakebase,
+    get_quote_history,
+    RETENTION_HOURS,
+)
 
 router = APIRouter()
 
@@ -59,7 +72,12 @@ CRYPTO = ["BTC", "ETH", "SOL", "XRP", "ADA"]
 async def list_market_quotes(
     symbols: str = Query(",".join(MAJOR_INDICES), description="Comma-separated symbols"),
 ):
-    """Get real-time quotes for market indices/stocks."""
+    """Get real-time quotes for market indices/stocks.
+
+    LAKEBASE-FIRST PATTERN:
+    - Quotes are fetched from Finnhub and persisted to Lakebase
+    - Enables historical price tracking for time-based navigation
+    """
     symbol_list = [s.strip().upper() for s in symbols.split(",")]
     cache_key = f"quotes:{','.join(sorted(symbol_list))}"
 
@@ -68,6 +86,7 @@ async def list_market_quotes(
         return ListQuotesResponse(**cached)
 
     quotes = []
+    quotes_to_persist = []
     now = int(datetime.utcnow().timestamp() * 1000)
 
     if settings.FINNHUB_API_KEY:
@@ -81,7 +100,7 @@ async def list_market_quotes(
                     if response.status_code == 200:
                         data = response.json()
                         if data.get("c"):  # Current price exists
-                            quotes.append(Quote(
+                            quote = Quote(
                                 symbol=symbol,
                                 name=symbol,  # Would need another API call for name
                                 price=float(data.get("c", 0)),
@@ -90,7 +109,20 @@ async def list_market_quotes(
                                 volume=None,
                                 market_cap=None,
                                 timestamp=now,
-                            ))
+                            )
+                            quotes.append(quote)
+
+                            # Prepare for Lakebase persistence
+                            quotes_to_persist.append({
+                                "symbol": symbol,
+                                "asset_type": "stock",
+                                "name": symbol,
+                                "price": quote.price,
+                                "change": quote.change,
+                                "change_percent": quote.change_percent,
+                                "volume": None,
+                                "market_cap": None,
+                            })
                 except Exception as e:
                     print(f"[finnhub] Error fetching {symbol}: {e}")
     else:
@@ -106,6 +138,11 @@ async def list_market_quotes(
                 market_cap=None,
                 timestamp=now,
             ))
+
+    # Persist to Lakebase for historical tracking
+    if quotes_to_persist and not db.is_demo_mode:
+        saved = await save_market_quotes_batch(quotes_to_persist)
+        print(f"[finnhub] Persisted {saved} stock quotes to Lakebase")
 
     result = {
         "quotes": [q.model_dump() for q in quotes],
@@ -124,7 +161,12 @@ CRYPTO_CACHE_TTL = 120  # 2 minutes
 async def list_crypto_quotes(
     symbols: str = Query(",".join(CRYPTO), description="Comma-separated crypto symbols"),
 ):
-    """Get real-time cryptocurrency quotes from CoinGecko."""
+    """Get real-time cryptocurrency quotes from CoinGecko.
+
+    LAKEBASE-FIRST PATTERN:
+    - Quotes are fetched from CoinGecko (free API) and persisted to Lakebase
+    - Enables historical price tracking for time-based navigation
+    """
     symbol_list = [s.strip().upper() for s in symbols.split(",")]
     cache_key = f"crypto:{','.join(sorted(symbol_list))}"
 
@@ -133,6 +175,7 @@ async def list_crypto_quotes(
         return ListQuotesResponse(**cached)
 
     quotes = []
+    quotes_to_persist = []
     now = int(datetime.utcnow().timestamp() * 1000)
 
     # Map symbols to CoinGecko IDs
@@ -172,18 +215,39 @@ async def list_crypto_quotes(
                             coin_data = data[coin_id]
                             price = float(coin_data.get("usd", 0))
                             change_pct = float(coin_data.get("usd_24h_change", 0) or 0)
-                            quotes.append(Quote(
+                            volume = int(coin_data.get("usd_24h_vol", 0) or 0)
+                            market_cap = float(coin_data.get("usd_market_cap", 0) or 0)
+
+                            quote = Quote(
                                 symbol=symbol,
                                 name=coin_id.replace("-", " ").title(),
                                 price=price,
                                 change=price * change_pct / 100,
                                 change_percent=change_pct,
-                                volume=int(coin_data.get("usd_24h_vol", 0) or 0),
-                                market_cap=float(coin_data.get("usd_market_cap", 0) or 0),
+                                volume=volume,
+                                market_cap=market_cap,
                                 timestamp=now,
-                            ))
+                            )
+                            quotes.append(quote)
+
+                            # Prepare for Lakebase persistence
+                            quotes_to_persist.append({
+                                "symbol": symbol,
+                                "asset_type": "crypto",
+                                "name": coin_id.replace("-", " ").title(),
+                                "price": price,
+                                "change": price * change_pct / 100,
+                                "change_percent": change_pct,
+                                "volume": volume,
+                                "market_cap": market_cap,
+                            })
         except Exception as e:
             print(f"[coingecko] API error: {e}")
+
+    # Persist to Lakebase for historical tracking
+    if quotes_to_persist and not db.is_demo_mode:
+        saved = await save_market_quotes_batch(quotes_to_persist)
+        print(f"[coingecko] Persisted {saved} crypto quotes to Lakebase")
 
     result = {
         "quotes": [q.model_dump() for q in quotes],
@@ -233,6 +297,35 @@ async def list_commodity_quotes():
     }
     await cache_set(cache_key, result, MARKET_CACHE_TTL)
     return ListQuotesResponse(**result)
+
+
+class QuoteHistoryResponse(BaseModel):
+    symbol: str
+    history: list[dict]
+    total: int
+
+
+@router.get("/quote-history/{symbol}", response_model=QuoteHistoryResponse)
+async def get_symbol_quote_history(
+    symbol: str,
+    hours: int = Query(24, ge=1, le=168, description="Hours of history to fetch"),
+):
+    """Get historical price data for a specific symbol from Lakebase.
+
+    Enables time-based navigation for price charts.
+    """
+    symbol = symbol.upper()
+
+    if db.is_demo_mode:
+        return QuoteHistoryResponse(symbol=symbol, history=[], total=0)
+
+    history = await get_quote_history(symbol, hours)
+
+    return QuoteHistoryResponse(
+        symbol=symbol,
+        history=history,
+        total=len(history),
+    )
 
 
 @router.get("/list-etf-flows", response_model=ListETFFlowsResponse)

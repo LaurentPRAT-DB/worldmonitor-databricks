@@ -185,6 +185,99 @@ CREATE INDEX IF NOT EXISTS idx_vessel_positions_recorded_at ON vessel_positions(
 CREATE INDEX IF NOT EXISTS idx_vessel_positions_mmsi_time ON vessel_positions(mmsi, recorded_at DESC);
 """
 
+# Earthquake table - 30 day retention in Lakebase
+EARTHQUAKES_DDL = """
+CREATE TABLE IF NOT EXISTS earthquakes (
+    id TEXT PRIMARY KEY,
+    magnitude DOUBLE PRECISION NOT NULL,
+    latitude DOUBLE PRECISION NOT NULL,
+    longitude DOUBLE PRECISION NOT NULL,
+    depth DOUBLE PRECISION DEFAULT 0,
+    place TEXT,
+    occurred_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    alert_level TEXT,
+    tsunami_warning BOOLEAN DEFAULT FALSE,
+    felt_reports INTEGER DEFAULT 0,
+    url TEXT,
+    fetched_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_earthquakes_occurred ON earthquakes(occurred_at);
+CREATE INDEX IF NOT EXISTS idx_earthquakes_magnitude ON earthquakes(magnitude);
+"""
+
+# Conflict events table (UCDP) - 30 day retention in Lakebase
+CONFLICT_EVENTS_DDL = """
+CREATE TABLE IF NOT EXISTS conflict_events (
+    id TEXT PRIMARY KEY,
+    source TEXT NOT NULL,
+    event_type TEXT,
+    country TEXT,
+    admin1 TEXT,
+    location_name TEXT,
+    latitude DOUBLE PRECISION NOT NULL,
+    longitude DOUBLE PRECISION NOT NULL,
+    occurred_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    fatalities INTEGER DEFAULT 0,
+    actors TEXT[],
+    notes TEXT,
+    fetched_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_conflicts_occurred ON conflict_events(occurred_at);
+CREATE INDEX IF NOT EXISTS idx_conflicts_country ON conflict_events(country);
+CREATE INDEX IF NOT EXISTS idx_conflicts_source ON conflict_events(source);
+"""
+
+# Fire detections table (NASA FIRMS) - 7 day retention in Lakebase
+FIRE_DETECTIONS_DDL = """
+CREATE TABLE IF NOT EXISTS fire_detections (
+    id BIGSERIAL PRIMARY KEY,
+    fire_id TEXT,
+    latitude DOUBLE PRECISION NOT NULL,
+    longitude DOUBLE PRECISION NOT NULL,
+    brightness DOUBLE PRECISION,
+    confidence TEXT,
+    satellite TEXT,
+    frp DOUBLE PRECISION,
+    daynight TEXT,
+    detected_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    fetched_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    UNIQUE(latitude, longitude, detected_at)
+);
+
+CREATE INDEX IF NOT EXISTS idx_fires_detected ON fire_detections(detected_at);
+CREATE INDEX IF NOT EXISTS idx_fires_location ON fire_detections(latitude, longitude);
+"""
+
+# Market quotes history table - 24 hour retention in Lakebase
+MARKET_QUOTES_DDL = """
+CREATE TABLE IF NOT EXISTS market_quotes_history (
+    id BIGSERIAL PRIMARY KEY,
+    symbol TEXT NOT NULL,
+    asset_type TEXT NOT NULL,
+    name TEXT,
+    price DOUBLE PRECISION NOT NULL,
+    change DOUBLE PRECISION DEFAULT 0,
+    change_percent DOUBLE PRECISION DEFAULT 0,
+    volume BIGINT,
+    market_cap DOUBLE PRECISION,
+    recorded_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_quotes_symbol_time ON market_quotes_history(symbol, recorded_at DESC);
+CREATE INDEX IF NOT EXISTS idx_quotes_asset_type ON market_quotes_history(asset_type);
+"""
+
+# Retention hours by data type
+RETENTION_HOURS = {
+    "earthquakes": 720,      # 30 days
+    "conflicts": 720,        # 30 days
+    "fires": 168,            # 7 days
+    "market_quotes": 24,     # 24 hours
+    "vessels": LAKEBASE_RETENTION_HOURS,  # Default 24 hours
+}
+
 
 async def init_cache_table() -> None:
     """Initialize the cache table if Lakebase is available."""
@@ -208,6 +301,64 @@ async def init_vessel_positions_table() -> None:
         print("[db] Vessel positions table initialized")
     except Exception as e:
         print(f"[db] Failed to initialize vessel positions table: {e}")
+
+
+async def init_earthquakes_table() -> None:
+    """Initialize the earthquakes table for seismic data persistence."""
+    if not settings.is_lakebase_configured():
+        return
+    try:
+        async with db.acquire() as conn:
+            await conn.execute(EARTHQUAKES_DDL)
+        print("[db] Earthquakes table initialized")
+    except Exception as e:
+        print(f"[db] Failed to initialize earthquakes table: {e}")
+
+
+async def init_conflict_events_table() -> None:
+    """Initialize the conflict events table for UCDP data persistence."""
+    if not settings.is_lakebase_configured():
+        return
+    try:
+        async with db.acquire() as conn:
+            await conn.execute(CONFLICT_EVENTS_DDL)
+        print("[db] Conflict events table initialized")
+    except Exception as e:
+        print(f"[db] Failed to initialize conflict events table: {e}")
+
+
+async def init_fire_detections_table() -> None:
+    """Initialize the fire detections table for NASA FIRMS data persistence."""
+    if not settings.is_lakebase_configured():
+        return
+    try:
+        async with db.acquire() as conn:
+            await conn.execute(FIRE_DETECTIONS_DDL)
+        print("[db] Fire detections table initialized")
+    except Exception as e:
+        print(f"[db] Failed to initialize fire detections table: {e}")
+
+
+async def init_market_quotes_table() -> None:
+    """Initialize the market quotes history table for price tracking."""
+    if not settings.is_lakebase_configured():
+        return
+    try:
+        async with db.acquire() as conn:
+            await conn.execute(MARKET_QUOTES_DDL)
+        print("[db] Market quotes history table initialized")
+    except Exception as e:
+        print(f"[db] Failed to initialize market quotes table: {e}")
+
+
+async def init_all_tables() -> None:
+    """Initialize all Lakebase tables."""
+    await init_cache_table()
+    await init_vessel_positions_table()
+    await init_earthquakes_table()
+    await init_conflict_events_table()
+    await init_fire_detections_table()
+    await init_market_quotes_table()
 
 
 async def cache_get(key: str) -> Optional[dict]:
@@ -596,6 +747,454 @@ async def get_vessel_routes_from_unity_catalog(hours_back: int = 24) -> dict[str
         })
 
     return routes
+
+
+# =============================================================================
+# EARTHQUAKE PERSISTENCE FUNCTIONS
+# =============================================================================
+
+async def save_earthquake(earthquake: dict) -> bool:
+    """Save a single earthquake to Lakebase."""
+    if db.is_demo_mode:
+        return False
+    try:
+        await db.execute(
+            """
+            INSERT INTO earthquakes
+            (id, magnitude, latitude, longitude, depth, place, occurred_at, alert_level, tsunami_warning, felt_reports, url)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            ON CONFLICT (id) DO UPDATE SET
+                magnitude = EXCLUDED.magnitude,
+                fetched_at = NOW()
+            """,
+            earthquake.get("id"),
+            earthquake.get("magnitude", 0),
+            earthquake.get("latitude", 0),
+            earthquake.get("longitude", 0),
+            earthquake.get("depth", 0),
+            earthquake.get("place"),
+            datetime.fromtimestamp(earthquake.get("occurred_at", 0) / 1000, tz=timezone.utc),
+            earthquake.get("alert_level"),
+            earthquake.get("tsunami_warning", False),
+            earthquake.get("felt_reports", 0),
+            earthquake.get("url"),
+        )
+        return True
+    except Exception as e:
+        print(f"[db] Failed to save earthquake: {e}")
+        return False
+
+
+async def save_earthquakes_batch(earthquakes: list[dict]) -> int:
+    """Save multiple earthquakes to Lakebase. Returns count saved."""
+    if db.is_demo_mode or not earthquakes:
+        return 0
+
+    saved = 0
+    for eq in earthquakes:
+        if await save_earthquake(eq):
+            saved += 1
+    return saved
+
+
+async def get_earthquakes_from_lakebase(
+    hours_back: int = 168,
+    min_magnitude: float = 0,
+) -> list[dict]:
+    """Get earthquakes from Lakebase within time range."""
+    if db.is_demo_mode:
+        return []
+    try:
+        rows = await db.fetch(
+            """
+            SELECT id, magnitude, latitude, longitude, depth, place,
+                   occurred_at, alert_level, tsunami_warning, felt_reports, url
+            FROM earthquakes
+            WHERE occurred_at > NOW() - INTERVAL '1 hour' * $1
+              AND magnitude >= $2
+            ORDER BY occurred_at DESC
+            """,
+            hours_back, min_magnitude
+        )
+        return [
+            {
+                "id": r["id"],
+                "magnitude": r["magnitude"],
+                "location": {
+                    "latitude": r["latitude"],
+                    "longitude": r["longitude"],
+                    "depth": r["depth"],
+                },
+                "place": r["place"],
+                "occurred_at": int(r["occurred_at"].timestamp() * 1000) if r["occurred_at"] else 0,
+                "alert_level": r["alert_level"],
+                "tsunami_warning": r["tsunami_warning"],
+                "felt_reports": r["felt_reports"],
+                "url": r["url"],
+            }
+            for r in rows
+        ]
+    except Exception as e:
+        print(f"[db] Failed to get earthquakes: {e}")
+        return []
+
+
+async def cleanup_old_earthquakes(hours_to_keep: int = 720) -> int:
+    """Remove earthquakes older than specified hours."""
+    if db.is_demo_mode:
+        return 0
+    try:
+        result = await db.execute(
+            "DELETE FROM earthquakes WHERE occurred_at < NOW() - INTERVAL '1 hour' * $1",
+            hours_to_keep
+        )
+        return int(result.split()[-1]) if result else 0
+    except Exception:
+        return 0
+
+
+# =============================================================================
+# CONFLICT EVENT PERSISTENCE FUNCTIONS
+# =============================================================================
+
+async def save_conflict_event(event: dict) -> bool:
+    """Save a single conflict event to Lakebase."""
+    if db.is_demo_mode:
+        return False
+    try:
+        await db.execute(
+            """
+            INSERT INTO conflict_events
+            (id, source, event_type, country, admin1, location_name, latitude, longitude, occurred_at, fatalities, actors, notes)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            ON CONFLICT (id) DO UPDATE SET
+                fatalities = EXCLUDED.fatalities,
+                fetched_at = NOW()
+            """,
+            event.get("id"),
+            event.get("source", "ucdp"),
+            event.get("event_type"),
+            event.get("country"),
+            event.get("admin1"),
+            event.get("location_name"),
+            event.get("latitude", 0),
+            event.get("longitude", 0),
+            datetime.fromtimestamp(event.get("occurred_at", 0) / 1000, tz=timezone.utc),
+            event.get("fatalities", 0),
+            event.get("actors", []),
+            event.get("notes"),
+        )
+        return True
+    except Exception as e:
+        print(f"[db] Failed to save conflict event: {e}")
+        return False
+
+
+async def save_conflict_events_batch(events: list[dict]) -> int:
+    """Save multiple conflict events to Lakebase. Returns count saved."""
+    if db.is_demo_mode or not events:
+        return 0
+
+    saved = 0
+    for event in events:
+        if await save_conflict_event(event):
+            saved += 1
+    return saved
+
+
+async def get_conflicts_from_lakebase(
+    hours_back: int = 168,
+    source: str = None,
+    country: str = None,
+) -> list[dict]:
+    """Get conflict events from Lakebase within time range."""
+    if db.is_demo_mode:
+        return []
+    try:
+        query = """
+            SELECT id, source, event_type, country, admin1, location_name,
+                   latitude, longitude, occurred_at, fatalities, actors, notes
+            FROM conflict_events
+            WHERE occurred_at > NOW() - INTERVAL '1 hour' * $1
+        """
+        params = [hours_back]
+
+        if source:
+            query += " AND source = $2"
+            params.append(source)
+
+        if country:
+            idx = len(params) + 1
+            query += f" AND country = ${idx}"
+            params.append(country)
+
+        query += " ORDER BY occurred_at DESC"
+
+        rows = await db.fetch(query, *params)
+        return [
+            {
+                "id": r["id"],
+                "source": r["source"],
+                "event_type": r["event_type"],
+                "country": r["country"],
+                "admin1": r["admin1"],
+                "location": {"latitude": r["latitude"], "longitude": r["longitude"]},
+                "occurred_at": int(r["occurred_at"].timestamp() * 1000) if r["occurred_at"] else 0,
+                "fatalities": r["fatalities"],
+                "actors": r["actors"] or [],
+                "notes": r["notes"],
+            }
+            for r in rows
+        ]
+    except Exception as e:
+        print(f"[db] Failed to get conflicts: {e}")
+        return []
+
+
+async def cleanup_old_conflicts(hours_to_keep: int = 720) -> int:
+    """Remove conflict events older than specified hours."""
+    if db.is_demo_mode:
+        return 0
+    try:
+        result = await db.execute(
+            "DELETE FROM conflict_events WHERE occurred_at < NOW() - INTERVAL '1 hour' * $1",
+            hours_to_keep
+        )
+        return int(result.split()[-1]) if result else 0
+    except Exception:
+        return 0
+
+
+# =============================================================================
+# FIRE DETECTION PERSISTENCE FUNCTIONS
+# =============================================================================
+
+async def save_fire_detection(fire: dict) -> bool:
+    """Save a single fire detection to Lakebase."""
+    if db.is_demo_mode:
+        return False
+    try:
+        await db.execute(
+            """
+            INSERT INTO fire_detections
+            (fire_id, latitude, longitude, brightness, confidence, satellite, frp, daynight, detected_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            ON CONFLICT (latitude, longitude, detected_at) DO NOTHING
+            """,
+            fire.get("fire_id"),
+            fire.get("latitude", 0),
+            fire.get("longitude", 0),
+            fire.get("brightness", 0),
+            fire.get("confidence"),
+            fire.get("satellite"),
+            fire.get("frp", 0),
+            fire.get("daynight"),
+            datetime.fromtimestamp(fire.get("detected_at", 0) / 1000, tz=timezone.utc),
+        )
+        return True
+    except Exception as e:
+        print(f"[db] Failed to save fire detection: {e}")
+        return False
+
+
+async def save_fire_detections_batch(fires: list[dict]) -> int:
+    """Save multiple fire detections to Lakebase. Returns count saved."""
+    if db.is_demo_mode or not fires:
+        return 0
+
+    saved = 0
+    for fire in fires:
+        if await save_fire_detection(fire):
+            saved += 1
+    return saved
+
+
+async def get_fires_from_lakebase(hours_back: int = 24) -> list[dict]:
+    """Get fire detections from Lakebase within time range."""
+    if db.is_demo_mode:
+        return []
+    try:
+        rows = await db.fetch(
+            """
+            SELECT id, fire_id, latitude, longitude, brightness, confidence,
+                   satellite, frp, daynight, detected_at
+            FROM fire_detections
+            WHERE detected_at > NOW() - INTERVAL '1 hour' * $1
+            ORDER BY detected_at DESC
+            """,
+            hours_back
+        )
+        return [
+            {
+                "id": str(r["id"]),
+                "fire_id": r["fire_id"],
+                "location": {"latitude": r["latitude"], "longitude": r["longitude"]},
+                "brightness": r["brightness"],
+                "confidence": r["confidence"],
+                "satellite": r["satellite"],
+                "frp": r["frp"],
+                "daynight": r["daynight"],
+                "detected_at": int(r["detected_at"].timestamp() * 1000) if r["detected_at"] else 0,
+            }
+            for r in rows
+        ]
+    except Exception as e:
+        print(f"[db] Failed to get fires: {e}")
+        return []
+
+
+async def cleanup_old_fires(hours_to_keep: int = 168) -> int:
+    """Remove fire detections older than specified hours (default 7 days)."""
+    if db.is_demo_mode:
+        return 0
+    try:
+        result = await db.execute(
+            "DELETE FROM fire_detections WHERE detected_at < NOW() - INTERVAL '1 hour' * $1",
+            hours_to_keep
+        )
+        return int(result.split()[-1]) if result else 0
+    except Exception:
+        return 0
+
+
+# =============================================================================
+# MARKET QUOTES PERSISTENCE FUNCTIONS
+# =============================================================================
+
+async def save_market_quote(quote: dict) -> bool:
+    """Save a single market quote to history table."""
+    if db.is_demo_mode:
+        return False
+    try:
+        await db.execute(
+            """
+            INSERT INTO market_quotes_history
+            (symbol, asset_type, name, price, change, change_percent, volume, market_cap)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            """,
+            quote.get("symbol"),
+            quote.get("asset_type", "stock"),
+            quote.get("name"),
+            quote.get("price", 0),
+            quote.get("change", 0),
+            quote.get("change_percent", 0),
+            quote.get("volume"),
+            quote.get("market_cap"),
+        )
+        return True
+    except Exception as e:
+        print(f"[db] Failed to save market quote: {e}")
+        return False
+
+
+async def save_market_quotes_batch(quotes: list[dict]) -> int:
+    """Save multiple market quotes to history. Returns count saved."""
+    if db.is_demo_mode or not quotes:
+        return 0
+
+    saved = 0
+    for quote in quotes:
+        if await save_market_quote(quote):
+            saved += 1
+    return saved
+
+
+async def get_market_quotes_from_lakebase(
+    hours_back: int = 24,
+    asset_type: str = None,
+    symbols: list[str] = None,
+) -> list[dict]:
+    """Get most recent quote for each symbol from Lakebase."""
+    if db.is_demo_mode:
+        return []
+    try:
+        query = """
+            SELECT DISTINCT ON (symbol)
+                   symbol, asset_type, name, price, change, change_percent,
+                   volume, market_cap, recorded_at
+            FROM market_quotes_history
+            WHERE recorded_at > NOW() - INTERVAL '1 hour' * $1
+        """
+        params = [hours_back]
+
+        if asset_type:
+            query = query.replace("WHERE", f"WHERE asset_type = ${len(params) + 1} AND")
+            params.append(asset_type)
+
+        if symbols:
+            idx = len(params) + 1
+            query = query.replace(
+                "WHERE recorded_at",
+                f"WHERE symbol = ANY(${idx}) AND recorded_at"
+            )
+            params.append(symbols)
+
+        query += " ORDER BY symbol, recorded_at DESC"
+
+        rows = await db.fetch(query, *params)
+        return [
+            {
+                "symbol": r["symbol"],
+                "asset_type": r["asset_type"],
+                "name": r["name"],
+                "price": r["price"],
+                "change": r["change"],
+                "change_percent": r["change_percent"],
+                "volume": r["volume"],
+                "market_cap": r["market_cap"],
+                "timestamp": int(r["recorded_at"].timestamp() * 1000) if r["recorded_at"] else 0,
+            }
+            for r in rows
+        ]
+    except Exception as e:
+        print(f"[db] Failed to get market quotes: {e}")
+        return []
+
+
+async def get_quote_history(
+    symbol: str,
+    hours_back: int = 24,
+) -> list[dict]:
+    """Get price history for a specific symbol."""
+    if db.is_demo_mode:
+        return []
+    try:
+        rows = await db.fetch(
+            """
+            SELECT symbol, price, change_percent, recorded_at
+            FROM market_quotes_history
+            WHERE symbol = $1
+              AND recorded_at > NOW() - INTERVAL '1 hour' * $2
+            ORDER BY recorded_at ASC
+            """,
+            symbol, hours_back
+        )
+        return [
+            {
+                "symbol": r["symbol"],
+                "price": r["price"],
+                "change_percent": r["change_percent"],
+                "recorded_at": r["recorded_at"].isoformat() if r["recorded_at"] else None,
+            }
+            for r in rows
+        ]
+    except Exception as e:
+        print(f"[db] Failed to get quote history: {e}")
+        return []
+
+
+async def cleanup_old_quotes(hours_to_keep: int = 24) -> int:
+    """Remove market quotes older than specified hours."""
+    if db.is_demo_mode:
+        return 0
+    try:
+        result = await db.execute(
+            "DELETE FROM market_quotes_history WHERE recorded_at < NOW() - INTERVAL '1 hour' * $1",
+            hours_to_keep
+        )
+        return int(result.split()[-1]) if result else 0
+    except Exception:
+        return 0
 
 
 # =============================================================================

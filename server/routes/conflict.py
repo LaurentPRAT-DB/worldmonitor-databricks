@@ -1,5 +1,10 @@
 """
 Conflict API endpoints - ACLED, UCDP, humanitarian data.
+
+STORAGE PATTERN: Lakebase-first for UCDP (free API)
+- Fresh data fetched from APIs and persisted to Lakebase
+- Subsequent queries served from Lakebase for low latency
+- 30-day retention in Lakebase
 """
 
 from typing import Optional
@@ -9,7 +14,14 @@ from pydantic import BaseModel
 import httpx
 
 from ..config import settings
-from ..db import cache_get, cache_set
+from ..db import (
+    cache_get,
+    cache_set,
+    db,
+    save_conflict_events_batch,
+    get_conflicts_from_lakebase,
+    RETENTION_HOURS,
+)
 
 router = APIRouter()
 
@@ -140,18 +152,49 @@ async def list_ucdp_events(
     country: Optional[str] = Query(None, description="Country filter"),
     limit: int = Query(1000, le=5000),
 ):
-    """List UCDP georeferenced conflict events."""
-    cache_key = f"ucdp:{country or 'all'}:{start}:{end}"
+    """List UCDP georeferenced conflict events.
 
+    LAKEBASE-FIRST PATTERN:
+    1. Check Lakebase for recent UCDP data
+    2. If data is fresh enough, return from Lakebase
+    3. If stale or missing, fetch from UCDP API and persist to Lakebase
+    """
+    now = datetime.utcnow()
+    start_date = datetime.fromtimestamp(start / 1000) if start else now - timedelta(days=365)
+    end_date = datetime.fromtimestamp(end / 1000) if end else now
+    hours_back = int((now - start_date).total_seconds() / 3600)
+
+    # Try Lakebase first (fast path)
+    if not db.is_demo_mode:
+        lakebase_data = await get_conflicts_from_lakebase(hours_back, source="ucdp", country=country)
+        if lakebase_data:
+            print(f"[ucdp] Serving {len(lakebase_data)} events from Lakebase")
+            events = [
+                ConflictEvent(
+                    id=e["id"],
+                    event_type=e["event_type"],
+                    country=e["country"],
+                    admin1=e.get("admin1"),
+                    location=Location(**e["location"]),
+                    occurred_at=e["occurred_at"],
+                    fatalities=e["fatalities"],
+                    actors=e["actors"],
+                    source="UCDP",
+                )
+                for e in lakebase_data[:limit]
+            ]
+            return ListUcdpEventsResponse(events=events, total=len(events))
+
+    # Fallback: Check cache
+    cache_key = f"ucdp:{country or 'all'}:{start}:{end}"
     cached = await cache_get(cache_key)
     if cached:
         return ListUcdpEventsResponse(**cached)
 
-    now = datetime.utcnow()
-    start_date = datetime.fromtimestamp(start / 1000) if start else now - timedelta(days=365)
-    end_date = datetime.fromtimestamp(end / 1000) if end else now
-
+    # Fetch from UCDP API
     events = []
+    events_to_persist = []
+
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             params = {
@@ -175,22 +218,47 @@ async def list_ucdp_events(
                     lat = float(item.get("latitude", 0))
                     lon = float(item.get("longitude", 0))
                     if -90 <= lat <= 90 and -180 <= lon <= 180:
+                        event_id = f"ucdp-{item.get('id', '')}"
+                        occurred_at = int(datetime.strptime(
+                            item.get("date_start", "1970-01-01"),
+                            "%Y-%m-%d"
+                        ).timestamp() * 1000)
+
                         events.append(ConflictEvent(
-                            id=f"ucdp-{item.get('id', '')}",
+                            id=event_id,
                             event_type=item.get("type_of_violence", "Unknown"),
                             country=item.get("country", ""),
                             admin1=item.get("adm_1"),
                             location=Location(latitude=lat, longitude=lon),
-                            occurred_at=int(datetime.strptime(
-                                item.get("date_start", "1970-01-01"),
-                                "%Y-%m-%d"
-                            ).timestamp() * 1000),
+                            occurred_at=occurred_at,
                             fatalities=int(item.get("best", 0) or 0),
                             actors=[a for a in [item.get("side_a"), item.get("side_b")] if a],
                             source="UCDP",
                         ))
+
+                        # Prepare for Lakebase persistence
+                        events_to_persist.append({
+                            "id": event_id,
+                            "source": "ucdp",
+                            "event_type": item.get("type_of_violence", "Unknown"),
+                            "country": item.get("country", ""),
+                            "admin1": item.get("adm_1"),
+                            "location_name": item.get("where_prec"),
+                            "latitude": lat,
+                            "longitude": lon,
+                            "occurred_at": occurred_at,
+                            "fatalities": int(item.get("best", 0) or 0),
+                            "actors": [a for a in [item.get("side_a"), item.get("side_b")] if a],
+                            "notes": item.get("source_headline"),
+                        })
                 except (ValueError, TypeError):
                     continue
+
+        # Persist to Lakebase
+        if events_to_persist and not db.is_demo_mode:
+            saved = await save_conflict_events_batch(events_to_persist)
+            print(f"[ucdp] Persisted {saved} events to Lakebase")
+
     except Exception as e:
         print(f"[ucdp] API error: {e}")
 

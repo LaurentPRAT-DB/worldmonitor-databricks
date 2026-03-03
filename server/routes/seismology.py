@@ -1,5 +1,10 @@
 """
 Seismology API endpoints - USGS earthquake data.
+
+STORAGE PATTERN: Lakebase-first
+- Fresh data fetched from USGS API and persisted to Lakebase
+- Subsequent queries served from Lakebase for low latency
+- 30-day retention in Lakebase
 """
 
 from typing import Optional
@@ -8,7 +13,14 @@ from fastapi import APIRouter, Query
 from pydantic import BaseModel
 import httpx
 
-from ..db import cache_get, cache_set
+from ..db import (
+    cache_get,
+    cache_set,
+    db,
+    save_earthquakes_batch,
+    get_earthquakes_from_lakebase,
+    RETENTION_HOURS,
+)
 
 router = APIRouter()
 
@@ -53,20 +65,53 @@ async def list_earthquakes(
     max_longitude: Optional[float] = Query(None, ge=-180, le=180),
     limit: int = Query(500, le=2000),
 ):
-    """List earthquakes from USGS within time and magnitude range."""
-    # Build cache key from parameters
-    cache_key = f"usgs:{min_magnitude}:{start}:{end}:{min_latitude}:{max_latitude}"
+    """List earthquakes from USGS within time and magnitude range.
 
-    cached = await cache_get(cache_key)
-    if cached:
-        return ListEarthquakesResponse(**cached)
-
+    LAKEBASE-FIRST PATTERN:
+    1. Check Lakebase for recent data
+    2. If data is fresh enough, return from Lakebase
+    3. If stale or missing, fetch from USGS API and persist to Lakebase
+    """
     # Calculate date range (default: last 7 days)
     now = datetime.utcnow()
     start_time = datetime.fromtimestamp(start / 1000) if start else now - timedelta(days=7)
     end_time = datetime.fromtimestamp(end / 1000) if end else now
+    hours_back = int((now - start_time).total_seconds() / 3600)
 
+    # Try Lakebase first (fast path)
+    if not db.is_demo_mode:
+        lakebase_data = await get_earthquakes_from_lakebase(hours_back, min_magnitude)
+        if lakebase_data:
+            # Filter by location if specified
+            filtered = lakebase_data
+            if min_latitude is not None or max_latitude is not None or min_longitude is not None or max_longitude is not None:
+                filtered = [
+                    eq for eq in lakebase_data
+                    if (min_latitude is None or eq["location"]["latitude"] >= min_latitude)
+                    and (max_latitude is None or eq["location"]["latitude"] <= max_latitude)
+                    and (min_longitude is None or eq["location"]["longitude"] >= min_longitude)
+                    and (max_longitude is None or eq["location"]["longitude"] <= max_longitude)
+                ]
+            if max_magnitude:
+                filtered = [eq for eq in filtered if eq["magnitude"] <= max_magnitude]
+
+            if filtered:
+                print(f"[usgs] Serving {len(filtered)} earthquakes from Lakebase")
+                return ListEarthquakesResponse(
+                    earthquakes=[Earthquake(**eq) for eq in filtered[:limit]],
+                    total=len(filtered)
+                )
+
+    # Fallback: Check cache for API response
+    cache_key = f"usgs:{min_magnitude}:{start}:{end}:{min_latitude}:{max_latitude}"
+    cached = await cache_get(cache_key)
+    if cached:
+        return ListEarthquakesResponse(**cached)
+
+    # Fetch from USGS API
     earthquakes = []
+    earthquakes_to_persist = []
+
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             params = {
@@ -97,7 +142,7 @@ async def list_earthquakes(
                 coords = feature.get("geometry", {}).get("coordinates", [0, 0, 0])
 
                 if len(coords) >= 3:
-                    earthquakes.append(Earthquake(
+                    eq = Earthquake(
                         id=feature.get("id", ""),
                         magnitude=float(props.get("mag", 0) or 0),
                         place=props.get("place", "Unknown location"),
@@ -111,7 +156,29 @@ async def list_earthquakes(
                         felt_reports=int(props.get("felt", 0) or 0),
                         alert_level=props.get("alert"),
                         url=props.get("url", ""),
-                    ))
+                    )
+                    earthquakes.append(eq)
+
+                    # Prepare for Lakebase persistence
+                    earthquakes_to_persist.append({
+                        "id": eq.id,
+                        "magnitude": eq.magnitude,
+                        "latitude": eq.location.latitude,
+                        "longitude": eq.location.longitude,
+                        "depth": eq.location.depth,
+                        "place": eq.place,
+                        "occurred_at": eq.occurred_at,
+                        "alert_level": eq.alert_level,
+                        "tsunami_warning": eq.tsunami_warning,
+                        "felt_reports": eq.felt_reports,
+                        "url": eq.url,
+                    })
+
+        # Persist to Lakebase (async, non-blocking for response)
+        if earthquakes_to_persist and not db.is_demo_mode:
+            saved = await save_earthquakes_batch(earthquakes_to_persist)
+            print(f"[usgs] Persisted {saved} earthquakes to Lakebase")
+
     except Exception as e:
         print(f"[usgs] API error: {e}")
 

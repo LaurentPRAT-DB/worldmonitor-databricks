@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-from server.db import db, init_cache_table, init_vessel_positions_table
+from server.db import db, init_all_tables
 from server.config import settings, IS_DATABRICKS_APP
 
 # Import route modules
@@ -50,10 +50,9 @@ async def lifespan(app: FastAPI):
     # Initialize database
     if settings.is_lakebase_configured():
         await db.get_pool()
-        await init_cache_table()
-        await init_vessel_positions_table()
+        await init_all_tables()  # Creates all tables: cache, vessels, earthquakes, conflicts, fires, quotes
         await db.start_token_refresh_loop()
-        print("[app] Lakebase connected with token refresh")
+        print("[app] Lakebase connected with all tables initialized")
     else:
         print("[app] Running in demo mode (no database)")
 
