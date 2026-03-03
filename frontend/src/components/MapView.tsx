@@ -2,6 +2,31 @@ import { useEffect, useRef } from 'react'
 import maplibregl from 'maplibre-gl'
 import { useAppStore } from '../stores/appStore'
 
+// Color palette for different vessels - visually distinct colors
+const VESSEL_COLORS = [
+  '#06b6d4', // cyan
+  '#f59e0b', // amber
+  '#10b981', // emerald
+  '#8b5cf6', // violet
+  '#ef4444', // red
+  '#3b82f6', // blue
+  '#ec4899', // pink
+  '#84cc16', // lime
+  '#f97316', // orange
+  '#6366f1', // indigo
+  '#14b8a6', // teal
+  '#a855f7', // purple
+  '#eab308', // yellow
+  '#22c55e', // green
+  '#e11d48', // rose
+]
+
+// Get consistent color for a vessel based on its index
+function getVesselColor(_mmsi: string, index: number): string {
+  // Use index for consistent color assignment across the session
+  return VESSEL_COLORS[index % VESSEL_COLORS.length]
+}
+
 export default function MapView() {
   const mapContainer = useRef<HTMLDivElement>(null)
   const map = useRef<maplibregl.Map | null>(null)
@@ -9,6 +34,7 @@ export default function MapView() {
   const routePopupRef = useRef<maplibregl.Popup | null>(null)
   const routeSourceId = 'vessel-routes'
   const routeLayerId = 'vessel-routes-layer'
+  const arrowSourceId = 'vessel-route-arrows'
   const arrowLayerId = 'vessel-routes-arrows'
   const routePointsLayerId = 'vessel-routes-points'
 
@@ -19,7 +45,8 @@ export default function MapView() {
     vessels,
     vesselRoutes,
     selectedLayers,
-    showVesselRoutes
+    showVesselRoutes,
+    fetchVesselRoutes
   } = useAppStore()
 
   // Initialize map
@@ -172,28 +199,36 @@ export default function MapView() {
     }
   }, [conflicts, earthquakes, wildfires, vessels, selectedLayers])
 
+  // Fetch routes immediately when showVesselRoutes becomes true
+  useEffect(() => {
+    if (showVesselRoutes && Object.keys(vesselRoutes).length === 0) {
+      fetchVesselRoutes()
+    }
+  }, [showVesselRoutes, vesselRoutes, fetchVesselRoutes])
+
   // Update vessel routes when data changes
   useEffect(() => {
     if (!map.current) return
 
     const currentMap = map.current
 
-    // Create arrow image if it doesn't exist
-    const createArrowImage = async () => {
-      if (!currentMap.hasImage('route-arrow')) {
-        // Create a larger, more visible arrow SVG with white outline
-        const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
-          <polygon points="4,10 24,16 4,22 10,16" fill="#06b6d4" stroke="#ffffff" stroke-width="2"/>
+    // Create arrow image for a specific color
+    const createArrowImage = async (color: string, imageId: string) => {
+      if (!currentMap.hasImage(imageId)) {
+        const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+          <polygon points="4,8 18,12 4,16 8,12" fill="${color}" stroke="#ffffff" stroke-width="1.5"/>
         </svg>`
         const svgBlob = new Blob([svg], { type: 'image/svg+xml' })
         const url = URL.createObjectURL(svgBlob)
 
-        const img = new Image(32, 32)
+        const img = new Image(24, 24)
         img.src = url
 
         await new Promise<void>((resolve) => {
           img.onload = () => {
-            currentMap.addImage('route-arrow', img)
+            if (!currentMap.hasImage(imageId)) {
+              currentMap.addImage(imageId, img)
+            }
             URL.revokeObjectURL(url)
             resolve()
           }
@@ -207,7 +242,7 @@ export default function MapView() {
 
     // Wait for map to be loaded
     const updateRoutes = async () => {
-      // Remove existing layers and source
+      // Remove existing layers and sources
       if (currentMap.getLayer(routePointsLayerId)) {
         currentMap.removeLayer(routePointsLayerId)
       }
@@ -219,6 +254,9 @@ export default function MapView() {
       }
       if (currentMap.getSource(routeSourceId)) {
         currentMap.removeSource(routeSourceId)
+      }
+      if (currentMap.getSource(arrowSourceId)) {
+        currentMap.removeSource(arrowSourceId)
       }
 
       // Clean up popup
@@ -232,32 +270,86 @@ export default function MapView() {
         return
       }
 
-      // Create arrow image
-      await createArrowImage()
-
-      // Create vessel name lookup by MMSI
+      // Create vessel name and color lookup by MMSI
       const vesselNameMap: Record<string, string> = {}
+      const vesselColorMap: Record<string, string> = {}
+      const mmsiList = Object.keys(vesselRoutes)
+
       vessels.forEach(v => {
         vesselNameMap[v.mmsi] = v.name || v.mmsi
       })
 
-      // Convert routes to GeoJSON LineString features
-      const lineFeatures = Object.entries(vesselRoutes).map(([mmsi, points]) => ({
-        type: 'Feature' as const,
-        properties: {
-          mmsi,
-          vesselName: vesselNameMap[mmsi] || mmsi
-        },
-        geometry: {
-          type: 'LineString' as const,
-          coordinates: points.map(p => [p.longitude, p.latitude])
+      // Assign colors to vessels
+      mmsiList.forEach((mmsi, index) => {
+        vesselColorMap[mmsi] = getVesselColor(mmsi, index)
+      })
+
+      // Create arrow images for each color used
+      const uniqueColors = [...new Set(Object.values(vesselColorMap))]
+      for (const color of uniqueColors) {
+        await createArrowImage(color, `arrow-${color.replace('#', '')}`)
+      }
+
+      // Convert routes to GeoJSON LineString features with color property
+      const lineFeatures = mmsiList.map((mmsi) => {
+        const points = vesselRoutes[mmsi]
+        const color = vesselColorMap[mmsi]
+        return {
+          type: 'Feature' as const,
+          properties: {
+            mmsi,
+            vesselName: vesselNameMap[mmsi] || mmsi,
+            color
+          },
+          geometry: {
+            type: 'LineString' as const,
+            coordinates: points.map(p => [p.longitude, p.latitude])
+          }
         }
-      }))
+      })
+
+      // Create arrow point features - one every 10 points (10 * 4h = 40h intervals)
+      const arrowFeatures: GeoJSON.Feature[] = []
+      mmsiList.forEach((mmsi) => {
+        const points = vesselRoutes[mmsi]
+        const color = vesselColorMap[mmsi]
+        const vesselName = vesselNameMap[mmsi] || mmsi
+
+        // Place an arrow every 10 points
+        for (let i = 10; i < points.length; i += 10) {
+          const p = points[i]
+          const prevP = points[i - 1]
+
+          // Calculate bearing from previous point to current point
+          const bearing = calculateBearing(
+            prevP.latitude, prevP.longitude,
+            p.latitude, p.longitude
+          )
+
+          arrowFeatures.push({
+            type: 'Feature',
+            properties: {
+              mmsi,
+              vesselName,
+              color,
+              bearing,
+              arrowImage: `arrow-${color.replace('#', '')}`
+            },
+            geometry: {
+              type: 'Point',
+              coordinates: [p.longitude, p.latitude]
+            }
+          })
+        }
+      })
 
       // Create point features for hover interaction (sample every few points for performance)
       const pointFeatures: GeoJSON.Feature[] = []
-      Object.entries(vesselRoutes).forEach(([mmsi, points]) => {
+      mmsiList.forEach((mmsi) => {
+        const points = vesselRoutes[mmsi]
         const vesselName = vesselNameMap[mmsi] || mmsi
+        const color = vesselColorMap[mmsi]
+
         // Sample points - take every 3rd point to reduce density
         points.forEach((p, idx) => {
           if (idx % 3 === 0 || idx === points.length - 1) {
@@ -266,6 +358,7 @@ export default function MapView() {
               properties: {
                 mmsi,
                 vesselName,
+                color,
                 recordedAt: p.recorded_at,
                 speed: p.speed,
                 course: p.course
@@ -279,7 +372,7 @@ export default function MapView() {
         })
       })
 
-      // Add GeoJSON source with both lines and points
+      // Add GeoJSON source for lines
       currentMap.addSource(routeSourceId, {
         type: 'geojson',
         data: {
@@ -288,7 +381,16 @@ export default function MapView() {
         }
       })
 
-      // Add line layer
+      // Add separate source for arrows (point-based)
+      currentMap.addSource(arrowSourceId, {
+        type: 'geojson',
+        data: {
+          type: 'FeatureCollection',
+          features: arrowFeatures
+        }
+      })
+
+      // Add line layer with data-driven color
       currentMap.addLayer({
         id: routeLayerId,
         type: 'line',
@@ -299,26 +401,24 @@ export default function MapView() {
           'line-cap': 'round'
         },
         paint: {
-          'line-color': 'rgba(6, 182, 212, 0.5)',
-          'line-width': 2,
-          'line-opacity': 0.7
+          'line-color': ['get', 'color'],
+          'line-width': 2.5,
+          'line-opacity': 0.8
         }
       })
 
-      // Add arrow symbols along the route to show direction
+      // Add arrow symbols as points with rotation based on bearing
       currentMap.addLayer({
         id: arrowLayerId,
         type: 'symbol',
-        source: routeSourceId,
-        filter: ['==', '$type', 'LineString'],
+        source: arrowSourceId,
         layout: {
-          'symbol-placement': 'line',
-          'symbol-spacing': 80,
-          'icon-image': 'route-arrow',
-          'icon-size': 0.8,
+          'icon-image': ['get', 'arrowImage'],
+          'icon-size': 0.9,
+          'icon-rotate': ['get', 'bearing'],
+          'icon-rotation-alignment': 'map',
           'icon-allow-overlap': true,
-          'icon-ignore-placement': true,
-          'icon-rotation-alignment': 'map'
+          'icon-ignore-placement': true
         }
       })
 
@@ -352,6 +452,7 @@ export default function MapView() {
           const coords = (feature.geometry as GeoJSON.Point).coordinates.slice() as [number, number]
           const props = feature.properties as {
             vesselName: string
+            color: string
             recordedAt: string | null
             speed: number
             course: number
@@ -373,7 +474,7 @@ export default function MapView() {
             .setLngLat(coords)
             .setHTML(`
               <div class="text-xs">
-                <div class="font-bold text-cyan-400">${props.vesselName}</div>
+                <div class="font-bold" style="color: ${props.color}">${props.vesselName}</div>
                 <div class="text-gray-300">${dateStr}</div>
                 <div class="text-gray-400">${props.speed?.toFixed(1) || '?'} kn · ${props.course?.toFixed(0) || '?'}°</div>
               </div>
@@ -394,6 +495,23 @@ export default function MapView() {
       currentMap.on('load', updateRoutes)
     }
   }, [vesselRoutes, vessels, selectedLayers, showVesselRoutes])
+
+// Calculate bearing between two points in degrees
+function calculateBearing(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const toRad = (deg: number) => deg * Math.PI / 180
+  const toDeg = (rad: number) => rad * 180 / Math.PI
+
+  const dLon = toRad(lon2 - lon1)
+  const lat1Rad = toRad(lat1)
+  const lat2Rad = toRad(lat2)
+
+  const y = Math.sin(dLon) * Math.cos(lat2Rad)
+  const x = Math.cos(lat1Rad) * Math.sin(lat2Rad) -
+            Math.sin(lat1Rad) * Math.cos(lat2Rad) * Math.cos(dLon)
+
+  let bearing = toDeg(Math.atan2(y, x))
+  return (bearing + 360) % 360
+}
 
   return (
     <div ref={mapContainer} className="w-full h-full" />
