@@ -24,44 +24,61 @@ World Monitor aggregates data from 15+ global data sources to provide real-time 
 
 ## Architecture
 
-```
-┌──────────────────────────────────────────────────────────────────┐
-│                      Databricks Apps                              │
-├──────────────────────────────────────────────────────────────────┤
-│                                                                   │
-│  ┌─────────────────┐         ┌─────────────────────────────────┐ │
-│  │  React Frontend │         │      FastAPI Backend            │ │
-│  │  (MapLibre GL)  │ ──────▶ │      (Python 3.11+)             │ │
-│  │  - Map View     │         │                                 │ │
-│  │  - Stats Panel  │         │  12 API Modules:                │ │
-│  │  - Intel Panel  │         │  • conflict   • maritime        │ │
-│  │  - Events Feed  │         │  • seismology • military        │ │
-│  └─────────────────┘         │  • wildfire   • market          │ │
-│                              │  • climate    • economic        │ │
-│                              │  • news       • intelligence    │ │
-│                              │  • cyber      • infrastructure  │ │
-│                              └───────────────┬─────────────────┘ │
-│                                              │                    │
-│        ┌─────────────────────────────────────┼──────────────────┐│
-│        │                                     ▼                  ││
-│        │  ┌─────────────┐    ┌─────────────────────────────┐   ││
-│        │  │  Lakebase   │    │     Unity Catalog           │   ││
-│        │  │ (PostgreSQL)│    │     Delta Lake Tables       │   ││
-│        │  │             │    │                             │   ││
-│        │  │ • Cache     │    │  Raw Tables:                │   ││
-│        │  │ • Sessions  │    │  • conflict_events          │   ││
-│        │  │ • Real-time │    │  • earthquake_events        │   ││
-│        │  │   positions │    │  • wildfire_events          │   ││
-│        │  └─────────────┘    │  • maritime_vessels         │   ││
-│        │                     │  • market_quotes            │   ││
-│        │                     │                             │   ││
-│        │  ┌─────────────────────────────────────────────────┐  ││
-│        │  │         Foundation Model API                    │  ││
-│        │  │         (Claude Sonnet 4.5)                     │  ││
-│        │  │  • Country Briefs • Ask AI Chat                 │  ││
-│        │  └─────────────────────────────────────────────────┘  ││
-│        └────────────────────────────────────────────────────────┘│
-└──────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph APP["Databricks Apps"]
+        subgraph FRONTEND["React Frontend (MapLibre GL)"]
+            FE1["Map View"]
+            FE2["Stats Panel"]
+            FE3["Intel Panel"]
+            FE4["Events Feed"]
+        end
+
+        subgraph BACKEND["FastAPI Backend (Python 3.11+)"]
+            API["12 API Modules"]
+            API1["conflict • maritime"]
+            API2["seismology • military"]
+            API3["wildfire • market"]
+            API4["climate • economic"]
+            API5["news • intelligence"]
+            API6["cyber • infrastructure"]
+        end
+
+        FRONTEND -->|HTTP/REST| BACKEND
+
+        subgraph STORAGE["Data Layer"]
+            subgraph LB["Lakebase (PostgreSQL)"]
+                LB1["Cache"]
+                LB2["Sessions"]
+                LB3["Real-time Positions"]
+            end
+
+            subgraph UC["Unity Catalog (Delta Lake)"]
+                UC1["conflict_events"]
+                UC2["earthquake_events"]
+                UC3["wildfire_events"]
+                UC4["maritime_vessels"]
+                UC5["market_quotes"]
+            end
+        end
+
+        subgraph AI["Foundation Model API"]
+            FM["Claude Sonnet 4.5"]
+            FM1["Country Briefs"]
+            FM2["Ask AI Chat"]
+        end
+
+        BACKEND --> LB
+        BACKEND --> UC
+        BACKEND --> AI
+    end
+
+    style APP fill:#1a1a2e,stroke:#ff6b35,stroke-width:2px
+    style FRONTEND fill:#16213e,stroke:#0f4c75
+    style BACKEND fill:#16213e,stroke:#0f4c75
+    style LB fill:#1b4332,stroke:#40916c
+    style UC fill:#023047,stroke:#219ebc
+    style AI fill:#3d0066,stroke:#9d4edd
 ```
 
 ## Quick Start

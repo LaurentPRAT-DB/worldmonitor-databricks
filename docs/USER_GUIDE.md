@@ -8,30 +8,39 @@ World Monitor showcases how **Databricks Lakebase** (managed PostgreSQL) and **L
 
 ## Key Demo Value Proposition
 
-```
-                        Real-Time + Historical Analytics in One Platform
+```mermaid
+flowchart TB
+    subgraph PLATFORM["Real-Time + Historical Analytics in One Platform"]
+        direction TB
 
-    ┌──────────────────────────────────────────────────────────────────────┐
-    │                                                                       │
-    │   REAL-TIME DATA (Lakebase)          HISTORICAL DATA (Lakehouse)     │
-    │   ━━━━━━━━━━━━━━━━━━━━━━━━           ━━━━━━━━━━━━━━━━━━━━━━━━━━━━    │
-    │                                                                       │
-    │   • Live vessel positions             • 30-day route history          │
-    │   • Current market prices             • Trend analysis                │
-    │   • Active earthquake alerts          • Historical patterns           │
-    │   • Sub-10ms response time            • Cost-effective storage        │
-    │                                                                       │
-    │                        ╔═══════════════════════╗                     │
-    │                        ║   LLM INTELLIGENCE    ║                     │
-    │                        ║   Claude Sonnet 4.5   ║                     │
-    │                        ║   via Foundation API  ║                     │
-    │                        ╚═══════════════════════╝                     │
-    │                                                                       │
-    │                    "What are the geopolitical hotspots?"             │
-    │                    "Summarize vessel activity in the Gulf"           │
-    │                    "Generate a country risk brief for Syria"         │
-    │                                                                       │
-    └──────────────────────────────────────────────────────────────────────┘
+        subgraph REALTIME["REAL-TIME DATA (Lakebase)"]
+            RT1["Live vessel positions"]
+            RT2["Current market prices"]
+            RT3["Active earthquake alerts"]
+            RT4["Sub-10ms response time"]
+        end
+
+        subgraph HISTORICAL["HISTORICAL DATA (Lakehouse)"]
+            HI1["30-day route history"]
+            HI2["Trend analysis"]
+            HI3["Historical patterns"]
+            HI4["Cost-effective storage"]
+        end
+
+        subgraph LLM["LLM INTELLIGENCE<br/>Claude Sonnet 4.5<br/>via Foundation API"]
+            Q1["What are the geopolitical hotspots?"]
+            Q2["Summarize vessel activity in the Gulf"]
+            Q3["Generate a country risk brief for Syria"]
+        end
+
+        REALTIME --> LLM
+        HISTORICAL --> LLM
+    end
+
+    style PLATFORM fill:#1a1a2e,stroke:#ff6b35,stroke-width:2px
+    style REALTIME fill:#1b4332,stroke:#40916c
+    style HISTORICAL fill:#023047,stroke:#219ebc
+    style LLM fill:#3d0066,stroke:#9d4edd
 ```
 
 ---
@@ -139,30 +148,26 @@ Changing time range:
 
 ### Hybrid Storage Strategy
 
-```
-Request Flow:
-─────────────
+```mermaid
+flowchart TD
+    A[User Request] --> B[FastAPI Backend]
+    B --> C{Time-based Router}
 
-User Request → FastAPI Backend → Time-based Router
-                                       │
-                    ┌──────────────────┴──────────────────┐
-                    │                                      │
-                    ▼                                      ▼
-            hours_back <= 24h?                     hours_back > 24h?
-                    │                                      │
-                    ▼                                      ▼
-              ┌──────────┐                         ┌──────────────┐
-              │ Lakebase │                         │ Unity Catalog│
-              │ (Postgres)│                        │ (Delta Lake) │
-              └──────────┘                         └──────────────┘
-                    │                                      │
-                    └──────────────┬───────────────────────┘
-                                   │
-                                   ▼
-                          Merge & Deduplicate
-                                   │
-                                   ▼
-                            API Response
+    C -->|hours_back <= 24h| D[(Lakebase<br/>PostgreSQL)]
+    C -->|hours_back > 24h| E[(Unity Catalog<br/>Delta Lake)]
+
+    D --> F[Merge & Deduplicate]
+    E --> F
+
+    F --> G[API Response]
+
+    style A fill:#f5f5f5,stroke:#333
+    style B fill:#16213e,stroke:#0f4c75,color:#fff
+    style C fill:#ff6b35,stroke:#333,color:#fff
+    style D fill:#1b4332,stroke:#40916c,color:#fff
+    style E fill:#023047,stroke:#219ebc,color:#fff
+    style F fill:#ff9800,stroke:#333,color:#fff
+    style G fill:#4caf50,stroke:#333,color:#fff
 ```
 
 ### Why This Architecture?
