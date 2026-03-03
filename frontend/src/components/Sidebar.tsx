@@ -38,9 +38,10 @@ export default function Sidebar() {
   const toggleLayer = useAppStore((state) => state.toggleLayer)
 
   const handleLayerToggle = (e: React.MouseEvent, layer: LayerType | undefined) => {
-    // Toggle the layer on/off when clicking the layer indicator
+    // Toggle the layer on/off when clicking the layer indicator or ON/OFF badge
     if (layer) {
       e.preventDefault() // Prevent navigation when toggling layer
+      e.stopPropagation() // Stop event from bubbling to Link
       toggleLayer(layer)
     }
   }
@@ -107,13 +108,16 @@ export default function Sidebar() {
                       <>
                         <span className="text-sm font-medium flex-1">{item.label}</span>
                         {hasLayer && (
-                          <span className={`text-xs px-1.5 py-0.5 rounded ${
-                            layerSelected
-                              ? 'bg-green-500/20 text-green-400'
-                              : 'bg-gray-700 text-gray-500'
-                          }`}>
+                          <button
+                            onClick={(e) => handleLayerToggle(e, item.layer as LayerType)}
+                            className={`text-xs px-1.5 py-0.5 rounded cursor-pointer hover:opacity-80 transition-opacity ${
+                              layerSelected
+                                ? 'bg-green-500/20 text-green-400'
+                                : 'bg-gray-700 text-gray-500'
+                            }`}
+                          >
                             {layerSelected ? 'ON' : 'OFF'}
-                          </span>
+                          </button>
                         )}
                       </>
                     )}
