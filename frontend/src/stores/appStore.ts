@@ -302,14 +302,36 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
-  // Fetch market data
+  // Fetch market data (stocks + crypto)
   fetchMarkets: async () => {
     try {
-      const res = await fetch(`${API_BASE}/list-market-quotes`)
-      if (res.ok) {
-        const data = await res.json()
-        set({ marketQuotes: data.quotes || [] })
+      // Fetch both stocks and crypto in parallel
+      const [stocksRes, cryptoRes] = await Promise.all([
+        fetch(`${API_BASE}/list-market-quotes`),
+        fetch(`${API_BASE}/list-crypto-quotes`),
+      ])
+
+      const allQuotes: MarketQuote[] = []
+
+      if (stocksRes.ok) {
+        const stocksData = await stocksRes.json()
+        const stocks = (stocksData.quotes || []).map((q: any) => ({
+          ...q,
+          asset_type: 'stock',
+        }))
+        allQuotes.push(...stocks)
       }
+
+      if (cryptoRes.ok) {
+        const cryptoData = await cryptoRes.json()
+        const crypto = (cryptoData.quotes || []).map((q: any) => ({
+          ...q,
+          asset_type: 'crypto',
+        }))
+        allQuotes.push(...crypto)
+      }
+
+      set({ marketQuotes: allQuotes })
     } catch (e) {
       console.error('Failed to fetch markets:', e)
     }
