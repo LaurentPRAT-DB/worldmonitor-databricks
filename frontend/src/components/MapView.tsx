@@ -46,6 +46,7 @@ export default function MapView() {
     vesselRoutes,
     selectedLayers,
     showVesselRoutes,
+    selectedVessel,
     fetchVesselRoutes
   } = useAppStore()
 
@@ -240,6 +241,8 @@ export default function MapView() {
       }
     }
 
+    const glowLayerId = 'vessel-routes-glow'
+
     // Wait for map to be loaded
     const updateRoutes = async () => {
       // Remove existing layers and sources
@@ -251,6 +254,9 @@ export default function MapView() {
       }
       if (currentMap.getLayer(routeLayerId)) {
         currentMap.removeLayer(routeLayerId)
+      }
+      if (currentMap.getLayer(glowLayerId)) {
+        currentMap.removeLayer(glowLayerId)
       }
       if (currentMap.getSource(routeSourceId)) {
         currentMap.removeSource(routeSourceId)
@@ -390,7 +396,28 @@ export default function MapView() {
         }
       })
 
-      // Add line layer with data-driven color
+      // Add glow layer for selected route (rendered beneath main line)
+      // Add glow layer for selected route (rendered beneath main line)
+      if (selectedVessel) {
+        currentMap.addLayer({
+          id: glowLayerId,
+          type: 'line',
+          source: routeSourceId,
+          filter: ['all', ['==', '$type', 'LineString'], ['==', ['get', 'mmsi'], selectedVessel]],
+          layout: {
+            'line-join': 'round',
+            'line-cap': 'round'
+          },
+          paint: {
+            'line-color': ['get', 'color'],
+            'line-width': 12,
+            'line-opacity': 0.4,
+            'line-blur': 6
+          }
+        })
+      }
+
+      // Add line layer with data-driven color and selection-aware styling
       currentMap.addLayer({
         id: routeLayerId,
         type: 'line',
@@ -402,8 +429,14 @@ export default function MapView() {
         },
         paint: {
           'line-color': ['get', 'color'],
-          'line-width': 2.5,
-          'line-opacity': 0.8
+          // Thicker line for selected vessel
+          'line-width': selectedVessel
+            ? ['case', ['==', ['get', 'mmsi'], selectedVessel], 5, 2]
+            : 2.5,
+          // Dim unselected routes when a vessel is selected
+          'line-opacity': selectedVessel
+            ? ['case', ['==', ['get', 'mmsi'], selectedVessel], 1, 0.25]
+            : 0.8
         }
       })
 
@@ -414,11 +447,19 @@ export default function MapView() {
         source: arrowSourceId,
         layout: {
           'icon-image': ['get', 'arrowImage'],
-          'icon-size': 0.9,
+          'icon-size': selectedVessel
+            ? ['case', ['==', ['get', 'mmsi'], selectedVessel], 1.1, 0.7]
+            : 0.9,
           'icon-rotate': ['get', 'bearing'],
           'icon-rotation-alignment': 'map',
           'icon-allow-overlap': true,
           'icon-ignore-placement': true
+        },
+        paint: {
+          // Dim unselected arrows when a vessel is selected
+          'icon-opacity': selectedVessel
+            ? ['case', ['==', ['get', 'mmsi'], selectedVessel], 1, 0.25]
+            : 1
         }
       })
 
@@ -494,7 +535,7 @@ export default function MapView() {
     } else {
       currentMap.on('load', updateRoutes)
     }
-  }, [vesselRoutes, vessels, selectedLayers, showVesselRoutes])
+  }, [vesselRoutes, vessels, selectedLayers, showVesselRoutes, selectedVessel])
 
 // Calculate bearing between two points in degrees
 function calculateBearing(lat1: number, lon1: number, lat2: number, lon2: number): number {

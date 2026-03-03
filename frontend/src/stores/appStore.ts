@@ -123,6 +123,7 @@ interface AppState {
   selectedCountry: string | null
   timeRange: number // days
   showVesselRoutes: boolean
+  selectedVessel: string | null // MMSI of selected vessel for route highlighting
 
   // Actions
   fetchAllData: () => Promise<void>
@@ -140,6 +141,7 @@ interface AppState {
   setTimeRange: (days: number) => void
   setSelectedCountry: (code: string | null) => void
   toggleVesselRoutes: () => void
+  setSelectedVessel: (mmsi: string | null) => void
 }
 
 const API_BASE = '/api'
@@ -168,6 +170,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   selectedCountry: null,
   timeRange: 7,
   showVesselRoutes: false,
+  selectedVessel: null,
 
   // Fetch all data
   fetchAllData: async () => {
@@ -425,5 +428,21 @@ export const useAppStore = create<AppState>((set, get) => ({
       get().fetchVesselRoutes()
     }
     set({ showVesselRoutes: !showVesselRoutes })
+  },
+
+  // Set selected vessel for route highlighting (toggle on/off)
+  setSelectedVessel: (mmsi: string | null) => {
+    const { selectedVessel, showVesselRoutes, vesselRoutes } = get()
+    // Toggle: if clicking same vessel, deselect; otherwise select new one
+    const newSelection = selectedVessel === mmsi ? null : mmsi
+    // Auto-enable routes when selecting a vessel
+    if (newSelection && !showVesselRoutes) {
+      if (Object.keys(vesselRoutes).length === 0) {
+        get().fetchVesselRoutes()
+      }
+      set({ selectedVessel: newSelection, showVesselRoutes: true })
+    } else {
+      set({ selectedVessel: newSelection })
+    }
   },
 }))

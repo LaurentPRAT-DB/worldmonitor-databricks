@@ -262,30 +262,48 @@ function FireList({ fires }: { fires: any[] }) {
 }
 
 function VesselList({ vessels }: { vessels: any[] }) {
+  const { selectedVessel, setSelectedVessel } = useAppStore()
+
   return (
     <div className="divide-y divide-wm-border">
-      {vessels.slice(0, 30).map((vessel) => (
-        <div key={vessel.mmsi} className="p-3 hover:bg-wm-bg/50">
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="text-sm font-medium">
-                {vessel.name || `MMSI: ${vessel.mmsi}`}
+      {vessels.slice(0, 30).map((vessel) => {
+        const isSelected = selectedVessel === vessel.mmsi
+        return (
+          <div
+            key={vessel.mmsi}
+            className={`p-3 cursor-pointer transition-all ${
+              isSelected
+                ? 'bg-cyan-500/20 border-l-2 border-cyan-400'
+                : 'hover:bg-wm-bg/50 border-l-2 border-transparent'
+            }`}
+            onClick={() => setSelectedVessel(vessel.mmsi)}
+          >
+            <div className="flex items-center justify-between">
+              <div>
+                <div className={`text-sm font-medium ${isSelected ? 'text-cyan-400' : ''}`}>
+                  {vessel.name || `MMSI: ${vessel.mmsi}`}
+                </div>
+                <div className="text-xs text-gray-400">
+                  {vessel.vessel_type} - {vessel.flag}
+                </div>
               </div>
-              <div className="text-xs text-gray-400">
-                {vessel.vessel_type} - {vessel.flag}
+              <div className="text-right">
+                <div className="text-xs text-cyan-400">
+                  {vessel.speed?.toFixed(1)} kn
+                </div>
+                <div className="text-xs text-gray-400">
+                  {vessel.course?.toFixed(0)}°
+                </div>
               </div>
             </div>
-            <div className="text-right">
-              <div className="text-xs text-cyan-400">
-                {vessel.speed?.toFixed(1)} kn
+            {isSelected && (
+              <div className="text-xs text-cyan-400/70 mt-1">
+                Click again to deselect
               </div>
-              <div className="text-xs text-gray-400">
-                {vessel.course?.toFixed(0)}°
-              </div>
-            </div>
+            )}
           </div>
-        </div>
-      ))}
+        )
+      })}
     </div>
   )
 }
