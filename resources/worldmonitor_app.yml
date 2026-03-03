@@ -4,3 +4,14 @@ resources:
       name: worldmonitor-${bundle.target}
       description: "World Monitor - Real-time geopolitical intelligence dashboard"
       source_code_path: ..
+      resources:
+        # Foundation Model API for AI features
+        - name: llm_endpoint
+          serving_endpoint:
+            name: databricks-claude-sonnet-4-5
+            permission: CAN_QUERY
+        # SQL Warehouse for Unity Catalog queries
+        - name: sql_warehouse
+          sql_warehouse:
+            id: b868e84cedeb4262
+            permission: CAN_USE
