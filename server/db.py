@@ -363,6 +363,7 @@ async def init_all_tables() -> None:
 
 async def cache_get(key: str) -> Optional[dict]:
     """Get a value from the cache."""
+    import json
     if db.is_demo_mode:
         return None
     try:
@@ -370,25 +371,37 @@ async def cache_get(key: str) -> Optional[dict]:
             "SELECT value FROM api_cache WHERE cache_key = $1 AND expires_at > NOW()",
             key
         )
-        return dict(row["value"]) if row else None
+        if row:
+            val = row["value"]
+            # Handle both JSONB (returns dict) and TEXT (returns string)
+            if isinstance(val, dict):
+                return val
+            return json.loads(val)
+        return None
     except Exception:
         return None
 
 
 async def cache_set(key: str, value: dict, ttl_seconds: int = 300) -> None:
-    """Set a value in the cache with TTL."""
+    """Set a value in the cache with TTL.
+
+    Uses explicit JSON serialization for compatibility with both TEXT and JSONB columns.
+    """
+    import json
     if db.is_demo_mode:
         return
     try:
+        # Serialize dict to JSON string for storage
+        value_json = json.dumps(value)
         await db.execute(
             """
             INSERT INTO api_cache (cache_key, value, expires_at)
-            VALUES ($1, $2, NOW() + INTERVAL '1 second' * $3)
+            VALUES ($1, $2::jsonb, NOW() + INTERVAL '1 second' * $3)
             ON CONFLICT (cache_key) DO UPDATE SET
                 value = EXCLUDED.value,
                 expires_at = EXCLUDED.expires_at
             """,
-            key, value, ttl_seconds
+            key, value_json, ttl_seconds
         )
     except Exception as e:
         print(f"[cache] Failed to set {key}: {e}")

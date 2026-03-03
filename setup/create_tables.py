@@ -103,7 +103,7 @@ def create_raw_tables(spark: SparkSession, catalog: str, schema: str):
             acq_time STRING,
             satellite STRING,
             instrument STRING,
-            confidence INT,
+            confidence STRING,
             version STRING,
             bright_t31 DOUBLE,
             frp DOUBLE,
@@ -114,7 +114,7 @@ def create_raw_tables(spark: SparkSession, catalog: str, schema: str):
         USING DELTA
         PARTITIONED BY (acq_date)
         TBLPROPERTIES (delta.enableChangeDataFeed = true)
-        COMMENT 'NASA FIRMS active fire detections'
+        COMMENT 'NASA FIRMS active fire detections - confidence is n/l/h (nominal/low/high)'
         """,
 
         # Maritime Vessels

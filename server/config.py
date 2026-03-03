@@ -79,7 +79,9 @@ class Settings:
     SERVING_ENDPOINT: str = os.environ.get("SERVING_ENDPOINT", "databricks-claude-sonnet-4-5")
 
     # External APIs
-    ACLED_ACCESS_TOKEN: str = os.environ.get("ACLED_ACCESS_TOKEN", "")
+    # ACLED OAuth credentials (new authentication system as of Sept 2025)
+    ACLED_EMAIL: str = os.environ.get("ACLED_EMAIL", "")
+    ACLED_PASSWORD: str = os.environ.get("ACLED_PASSWORD", "")
     FINNHUB_API_KEY: str = os.environ.get("FINNHUB_API_KEY", "")
     NASA_FIRMS_API_KEY: str = os.environ.get("NASA_FIRMS_API_KEY", "")
     FRED_API_KEY: str = os.environ.get("FRED_API_KEY", "")

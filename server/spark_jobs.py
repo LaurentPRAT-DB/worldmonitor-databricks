@@ -57,23 +57,60 @@ def get_spark() -> SparkSession:
 # ACLED CONFLICT DATA INGESTION
 # ============================================================================
 
-def ingest_acled_conflicts(api_key: str, days_back: int = 7):
-    """Ingest ACLED conflict events into Delta table."""
+def get_acled_oauth_token(email: str, password: str) -> str:
+    """Get OAuth access token from ACLED API (valid for 24 hours).
+
+    ACLED moved to OAuth authentication in September 2025.
+    See: https://acleddata.com/knowledge-base/api-guide/
+    """
+    token_url = "https://acleddata.com/oauth/token"
+
+    response = requests.post(
+        token_url,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        data={
+            "username": email,
+            "password": password,
+            "grant_type": "password",
+            "client_id": "acled",
+        }
+    )
+
+    if response.status_code != 200:
+        print(f"ACLED OAuth error: {response.status_code} - {response.text}")
+        return None
+
+    token_data = response.json()
+    return token_data.get("access_token")
+
+
+def ingest_acled_conflicts(email: str, password: str, days_back: int = 7):
+    """Ingest ACLED conflict events into Delta table.
+
+    Uses OAuth token authentication (new system as of Sept 2025).
+    """
     spark = get_spark()
 
-    # Fetch from ACLED API
-    base_url = "https://api.acleddata.com/acled/read"
+    # Get OAuth token
+    access_token = get_acled_oauth_token(email, password)
+    if not access_token:
+        print("Failed to obtain ACLED OAuth token")
+        return
+
+    # Fetch from ACLED API with Bearer token
+    base_url = "https://acleddata.com/api/acled/read"
     params = {
-        "key": api_key,
-        "terms": "accept",
         "event_date": (datetime.utcnow() - timedelta(days=days_back)).strftime("%Y-%m-%d"),
         "event_date_where": ">=",
         "limit": 10000,
     }
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+    }
 
-    response = requests.get(base_url, params=params)
+    response = requests.get(base_url, params=params, headers=headers)
     if response.status_code != 200:
-        print(f"ACLED API error: {response.status_code}")
+        print(f"ACLED API error: {response.status_code} - {response.text[:200]}")
         return
 
     data = response.json().get("data", [])
@@ -218,8 +255,8 @@ def ingest_nasa_fires(map_key: str, days_back: int = 1):
     """Ingest NASA FIRMS active fire data into Delta table."""
     spark = get_spark()
 
-    # Fetch from FIRMS API
-    url = f"https://firms.modaps.eosdis.nasa.gov/api/country/csv/{map_key}/VIIRS_SNPP_NRT/world/{days_back}"
+    # Fetch from FIRMS API (use /area/ endpoint for global data)
+    url = f"https://firms.modaps.eosdis.nasa.gov/api/area/csv/{map_key}/VIIRS_SNPP_NRT/world/{days_back}"
 
     response = requests.get(url)
     if response.status_code != 200:
@@ -241,6 +278,7 @@ def ingest_nasa_fires(map_key: str, days_back: int = 1):
     df = spark.createDataFrame(pdf)
 
     # Transform to target schema
+    # Note: confidence is a string ('n'=nominal, 'l'=low, 'h'=high), not an integer
     transformed = df.select(
         concat(col("latitude").cast(StringType()), lit("_"),
                col("longitude").cast(StringType()), lit("_"),
@@ -254,7 +292,7 @@ def ingest_nasa_fires(map_key: str, days_back: int = 1):
         col("acq_time").cast(StringType()),
         col("satellite"),
         col("instrument"),
-        col("confidence").cast(IntegerType()),
+        col("confidence").cast(StringType()),
         col("version"),
         col("bright_ti5").alias("bright_t31").cast(DoubleType()),
         col("frp").cast(DoubleType()),
@@ -529,8 +567,8 @@ def run_all_ingestion_jobs(config: dict):
     """Run all data ingestion jobs."""
     print(f"Starting data ingestion at {datetime.utcnow()}")
 
-    if config.get("acled_key"):
-        ingest_acled_conflicts(config["acled_key"])
+    if config.get("acled_email") and config.get("acled_password"):
+        ingest_acled_conflicts(config["acled_email"], config["acled_password"])
 
     ingest_usgs_earthquakes()
 
@@ -561,12 +599,18 @@ if __name__ == "__main__":
     parser.add_argument("--job", type=str, required=True,
                         choices=["conflicts", "earthquakes", "fires", "market", "news", "cyber", "economic", "all"],
                         help="Which ingestion job to run")
+    # API credentials can be passed as arguments or via environment
+    parser.add_argument("--acled-email", type=str, help="ACLED OAuth email")
+    parser.add_argument("--acled-password", type=str, help="ACLED OAuth password")
+    parser.add_argument("--firms-key", type=str, help="NASA FIRMS API key")
     args = parser.parse_args()
 
-    # Get API keys from environment (set via Databricks job secrets)
+    # Get API keys from arguments first, then environment
     config = {
-        "acled_key": os.environ.get("ACLED_API_KEY"),
-        "firms_key": os.environ.get("NASA_FIRMS_KEY"),
+        # ACLED uses OAuth (email/password) since Sept 2025
+        "acled_email": args.acled_email or os.environ.get("ACLED_EMAIL"),
+        "acled_password": args.acled_password or os.environ.get("ACLED_PASSWORD"),
+        "firms_key": args.firms_key or os.environ.get("NASA_FIRMS_API_KEY"),
         "finnhub_key": os.environ.get("FINNHUB_API_KEY"),
         "fred_key": os.environ.get("FRED_API_KEY"),
     }
@@ -576,17 +620,17 @@ if __name__ == "__main__":
     if args.job == "all":
         run_all_ingestion_jobs(config)
     elif args.job == "conflicts":
-        if config["acled_key"]:
-            ingest_acled_conflicts(config["acled_key"])
+        if config["acled_email"] and config["acled_password"]:
+            ingest_acled_conflicts(config["acled_email"], config["acled_password"])
         else:
-            print("ACLED_API_KEY not set, skipping conflicts ingestion")
+            print("ACLED_EMAIL/ACLED_PASSWORD not set, skipping conflicts ingestion")
     elif args.job == "earthquakes":
         ingest_usgs_earthquakes()
     elif args.job == "fires":
         if config["firms_key"]:
             ingest_nasa_fires(config["firms_key"])
         else:
-            print("NASA_FIRMS_KEY not set, skipping fire ingestion")
+            print("NASA_FIRMS_API_KEY not set, skipping fire ingestion")
     elif args.job == "market":
         if config["finnhub_key"]:
             ingest_market_quotes(config["finnhub_key"])

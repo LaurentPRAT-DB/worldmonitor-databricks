@@ -62,9 +62,58 @@ class HumanitarianSummary(BaseModel):
     last_updated: str
 
 
-# ACLED API configuration
-ACLED_BASE_URL = "https://api.acleddata.com/acled/read"
+# ACLED API configuration (OAuth system as of Sept 2025)
+ACLED_TOKEN_URL = "https://acleddata.com/oauth/token"
+ACLED_API_URL = "https://acleddata.com/acleddatanew/api/acled/read"
 ACLED_CACHE_TTL = 900  # 15 minutes
+
+# Token cache (valid for 24 hours, we refresh every 23 hours to be safe)
+_acled_token_cache: dict = {"token": None, "expires_at": 0}
+
+
+async def get_acled_oauth_token() -> str | None:
+    """Get OAuth access token from ACLED API.
+
+    Tokens are valid for 24 hours. We cache and reuse them.
+    Returns None if credentials are not configured or auth fails.
+    """
+    import time
+
+    # Check cache first
+    if _acled_token_cache["token"] and time.time() < _acled_token_cache["expires_at"]:
+        return _acled_token_cache["token"]
+
+    # Need credentials
+    if not settings.ACLED_EMAIL or not settings.ACLED_PASSWORD:
+        return None
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                ACLED_TOKEN_URL,
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                data={
+                    "username": settings.ACLED_EMAIL,
+                    "password": settings.ACLED_PASSWORD,
+                    "grant_type": "password",
+                    "client_id": "acled",
+                },
+            )
+            if response.status_code != 200:
+                print(f"[acled] OAuth token request failed: {response.status_code}")
+                return None
+
+            token_data = response.json()
+            token = token_data.get("access_token")
+            if token:
+                # Cache for 23 hours (tokens valid for 24 hours)
+                _acled_token_cache["token"] = token
+                _acled_token_cache["expires_at"] = time.time() + (23 * 60 * 60)
+                print("[acled] OAuth token obtained successfully")
+            return token
+    except Exception as e:
+        print(f"[acled] OAuth error: {e}")
+        return None
 
 
 @router.get("/list-acled-events", response_model=ListAcledEventsResponse)
@@ -91,14 +140,13 @@ async def list_acled_events(
     start_date = datetime.fromtimestamp(start / 1000) if start else now - timedelta(days=30)
     end_date = datetime.fromtimestamp(end / 1000) if end else now
 
-    # Fetch from ACLED API
+    # Fetch from ACLED API using OAuth
     events = []
-    if settings.ACLED_ACCESS_TOKEN:
+    token = await get_acled_oauth_token()
+    if token:
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 params = {
-                    "key": settings.ACLED_ACCESS_TOKEN,
-                    "email": "api@worldmonitor.app",  # Required by ACLED
                     "event_date": f"{start_date.strftime('%Y-%m-%d')}|{end_date.strftime('%Y-%m-%d')}",
                     "event_date_where": "BETWEEN",
                     "event_type": event_types,
@@ -107,7 +155,8 @@ async def list_acled_events(
                 if country:
                     params["country"] = country
 
-                response = await client.get(ACLED_BASE_URL, params=params)
+                headers = {"Authorization": f"Bearer {token}"}
+                response = await client.get(ACLED_API_URL, params=params, headers=headers)
                 response.raise_for_status()
                 data = response.json()
 
@@ -134,6 +183,8 @@ async def list_acled_events(
                         continue
         except Exception as e:
             print(f"[acled] API error: {e}")
+    else:
+        print("[acled] No OAuth token available - check ACLED_EMAIL and ACLED_PASSWORD")
 
     result = {"events": [e.model_dump() for e in events], "total": len(events)}
     await cache_set(cache_key, result, ACLED_CACHE_TTL)
@@ -158,10 +209,21 @@ async def list_ucdp_events(
     1. Check Lakebase for recent UCDP data
     2. If data is fresh enough, return from Lakebase
     3. If stale or missing, fetch from UCDP API and persist to Lakebase
+
+    NOTE: UCDP data is historical (up to ~2023), not real-time.
+    Default range is 2019-2023 if no date filter provided.
     """
+    # UCDP GED 24.1 dataset covers up to end of 2023
+    UCDP_MAX_DATE = datetime(2023, 12, 31)
     now = datetime.utcnow()
-    start_date = datetime.fromtimestamp(start / 1000) if start else now - timedelta(days=365)
-    end_date = datetime.fromtimestamp(end / 1000) if end else now
+
+    # Default to 2019-2023 for historical conflict data
+    start_date = datetime.fromtimestamp(start / 1000) if start else datetime(2019, 1, 1)
+    end_date = datetime.fromtimestamp(end / 1000) if end else UCDP_MAX_DATE
+
+    # Cap end date at UCDP data availability
+    if end_date > UCDP_MAX_DATE:
+        end_date = UCDP_MAX_DATE
     hours_back = int((now - start_date).total_seconds() / 3600)
 
     # Try Lakebase first (fast path)
@@ -207,7 +269,8 @@ async def list_ucdp_events(
 
             headers = {}
             if settings.UCDP_ACCESS_TOKEN:
-                headers["Authorization"] = f"Bearer {settings.UCDP_ACCESS_TOKEN}"
+                # UCDP requires the token in the x-ucdp-access-token header
+                headers["x-ucdp-access-token"] = settings.UCDP_ACCESS_TOKEN
 
             response = await client.get(UCDP_BASE_URL, params=params, headers=headers)
             response.raise_for_status()
@@ -224,9 +287,18 @@ async def list_ucdp_events(
                             "%Y-%m-%d"
                         ).timestamp() * 1000)
 
+                        # UCDP type_of_violence: 1=state-based, 2=non-state, 3=one-sided
+                        violence_type_map = {
+                            1: "State-based conflict",
+                            2: "Non-state conflict",
+                            3: "One-sided violence",
+                        }
+                        violence_type = item.get("type_of_violence", 0)
+                        event_type = violence_type_map.get(violence_type, f"Type {violence_type}")
+
                         events.append(ConflictEvent(
                             id=event_id,
-                            event_type=item.get("type_of_violence", "Unknown"),
+                            event_type=event_type,
                             country=item.get("country", ""),
                             admin1=item.get("adm_1"),
                             location=Location(latitude=lat, longitude=lon),
@@ -240,7 +312,7 @@ async def list_ucdp_events(
                         events_to_persist.append({
                             "id": event_id,
                             "source": "ucdp",
-                            "event_type": item.get("type_of_violence", "Unknown"),
+                            "event_type": event_type,
                             "country": item.get("country", ""),
                             "admin1": item.get("adm_1"),
                             "location_name": item.get("where_prec"),

@@ -20,6 +20,7 @@ resources:
             python_file: ../server/spark_jobs.py
             parameters:
               - "--job=conflicts"
+              # TODO: Add --acled-email and --acled-password after registering at https://acleddata.com/data-export-tool/
           environment_key: "default"
 
         - task_key: "ingest_earthquakes"
@@ -42,10 +43,21 @@ resources:
               - "--job=cyber"
           environment_key: "default"
 
+        - task_key: "ingest_fires"
+          description: "Ingest NASA FIRMS fire detections"
+          depends_on:
+            - task_key: "ingest_cyber_threats"
+          spark_python_task:
+            python_file: ../server/spark_jobs.py
+            parameters:
+              - "--job=fires"
+              - "--firms-key=f36a6199bb704b87ed2313e3dcd4f31f"
+          environment_key: "default"
+
         - task_key: "ingest_news"
           description: "Ingest RSS news articles"
           depends_on:
-            - task_key: "ingest_cyber_threats"
+            - task_key: "ingest_fires"
           spark_python_task:
             python_file: ../server/spark_jobs.py
             parameters:

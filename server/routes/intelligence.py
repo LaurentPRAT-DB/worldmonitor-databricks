@@ -8,7 +8,7 @@ from fastapi import APIRouter, Query
 from pydantic import BaseModel
 
 from ..db import cache_get, cache_set
-from ..llm import generate_country_brief, classify_event
+from ..llm import generate_country_brief, classify_event, chat_completion
 
 router = APIRouter()
 
@@ -44,6 +44,17 @@ class EventClassification(BaseModel):
     severity: str
     tags: list[str]
     affected_sectors: list[str]
+
+
+class AskRequest(BaseModel):
+    question: str
+    context: Optional[str] = None  # Optional context about what's on screen
+
+
+class AskResponse(BaseModel):
+    answer: str
+    sources: list[str]
+    generated_at: str
 
 
 # Placeholder risk data (would be calculated from multiple data sources)
@@ -210,4 +221,69 @@ async def classify_event_endpoint(
             severity="medium",
             tags=[],
             affected_sectors=[],
+        )
+
+
+# System prompt for the Ask AI feature
+ASK_SYSTEM_PROMPT = """You are World Monitor AI, an expert geopolitical intelligence analyst.
+You help users understand global events, conflicts, risks, economic trends, and security situations.
+
+Your knowledge includes:
+- Armed conflicts and military activities (ACLED, UCDP data)
+- Natural disasters (earthquakes from USGS, wildfires from NASA FIRMS)
+- Maritime tracking and shipping routes
+- Financial markets and economic indicators
+- Cyber threats and infrastructure status
+- Country risk assessments
+
+Guidelines:
+- Be concise and factual
+- Cite data sources when possible
+- Provide actionable insights
+- Flag high-risk situations
+- Use professional, analytical tone
+- If you don't know something, say so
+
+Current date: {current_date}
+"""
+
+
+@router.post("/ask", response_model=AskResponse)
+async def ask_ai(request: AskRequest):
+    """Ask the AI about global events, risks, and analysis."""
+    try:
+        # Build system prompt with current date
+        system_prompt = ASK_SYSTEM_PROMPT.format(
+            current_date=datetime.utcnow().strftime("%Y-%m-%d")
+        )
+
+        # Add context if provided
+        user_message = request.question
+        if request.context:
+            user_message = f"Context: {request.context}\n\nQuestion: {request.question}"
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message}
+        ]
+
+        # Get response from LLM
+        answer = await chat_completion(
+            messages=messages,
+            max_tokens=1000,
+            temperature=0.7,
+        )
+
+        return AskResponse(
+            answer=answer,
+            sources=["ACLED", "UCDP", "USGS", "NASA FIRMS", "Finnhub", "World Monitor Analysis"],
+            generated_at=datetime.utcnow().isoformat(),
+        )
+
+    except Exception as e:
+        print(f"[intelligence] Ask AI error: {e}")
+        return AskResponse(
+            answer="I apologize, but I'm temporarily unable to process your question. Please try again in a moment.",
+            sources=[],
+            generated_at=datetime.utcnow().isoformat(),
         )

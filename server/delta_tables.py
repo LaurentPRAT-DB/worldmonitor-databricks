@@ -94,7 +94,7 @@ WILDFIRE_EVENTS_TABLE = TableDefinition(
         ("acq_time", "STRING"),
         ("satellite", "STRING"),
         ("instrument", "STRING"),
-        ("confidence", "INT"),
+        ("confidence", "STRING"),  # 'n'=nominal, 'l'=low, 'h'=high
         ("version", "STRING"),
         ("bright_t31", "DOUBLE"),
         ("frp", "DOUBLE"),  # Fire Radiative Power
@@ -103,7 +103,7 @@ WILDFIRE_EVENTS_TABLE = TableDefinition(
         ("ingested_at", "TIMESTAMP"),
     ],
     partition_cols=["acq_date"],
-    cluster_cols=["country", "confidence"],
+    cluster_cols=["country"],
     comment="NASA FIRMS active fire detections"
 )
 

@@ -18,6 +18,19 @@ env:
     value: c762eaa3194c7a53517a0a0e319b6a25
   - name: FINNHUB_API_KEY
     value: d6is6npr01qleu95bkegd6is6npr01qleu95bkf0
+  - name: NASA_FIRMS_API_KEY
+    value: f36a6199bb704b87ed2313e3dcd4f31f
+
+  # UCDP API access token (Uppsala Conflict Data Program)
+  - name: UCDP_ACCESS_TOKEN
+    value: e41d013c8650e84e
+
+  # ACLED OAuth credentials (register at https://acleddata.com/data-export-tool/)
+  # TODO: Register for API access and add credentials
+  - name: ACLED_EMAIL
+    value: ""
+  - name: ACLED_PASSWORD
+    value: ""
 
   # Lakebase database connection (auto-populated from resource)
   - name: PGHOST

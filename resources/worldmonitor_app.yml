@@ -15,3 +15,5 @@ resources:
           sql_warehouse:
             id: b868e84cedeb4262
             permission: CAN_USE
+        # NOTE: Database resources must be added via UI - bundles don't support them
+        # Add "worldmonitor-cache" database with READ_WRITE permission via UI

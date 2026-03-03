@@ -29,7 +29,7 @@ interface Wildfire {
   latitude: number
   longitude: number
   brightness: number
-  confidence: number
+  confidence: string  // 'h' (high), 'n' (nominal), 'l' (low)
   acq_date: string
 }
 
@@ -283,14 +283,14 @@ export const useAppStore = create<AppState>((set, get) => ({
       const res = await fetch(`${API_BASE}/list-fire-detections`)
       if (res.ok) {
         const data = await res.json()
-        // Map response to expected format
+        // Map response to expected format - API returns nested location object
         const wildfires = (data.fires || []).map((fire: any) => ({
-          id: fire.fire_id || `${fire.latitude}_${fire.longitude}`,
-          latitude: fire.latitude,
-          longitude: fire.longitude,
-          brightness: fire.brightness,
-          confidence: fire.confidence,
-          acq_date: fire.acq_date,
+          id: fire.id || fire.fire_id || `${fire.location?.latitude}_${fire.location?.longitude}`,
+          latitude: fire.location?.latitude ?? fire.latitude,
+          longitude: fire.location?.longitude ?? fire.longitude,
+          brightness: fire.brightness || 0,
+          confidence: fire.confidence || 'n',
+          acq_date: fire.detected_at ? new Date(fire.detected_at).toISOString().split('T')[0] : '',
         }))
         set({
           wildfires,

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import {
   Brain,
   Globe,
@@ -6,9 +6,17 @@ import {
   TrendingUp,
   Shield,
   RefreshCw,
-  MessageSquare
+  MessageSquare,
+  Send,
+  Loader2
 } from 'lucide-react'
 import { useAppStore } from '../stores/appStore'
+
+interface ChatMessage {
+  role: 'user' | 'assistant'
+  content: string
+  timestamp: string
+}
 
 export default function IntelPanel() {
   const { riskScores } = useAppStore()
@@ -20,6 +28,12 @@ export default function IntelPanel() {
     key_risks: string[]
     outlook: string
   } | null>(null)
+
+  // Ask AI state
+  const [question, setQuestion] = useState('')
+  const [chatHistory, setChatHistory] = useState<ChatMessage[]>([])
+  const [askLoading, setAskLoading] = useState(false)
+  const chatContainerRef = useRef<HTMLDivElement>(null)
 
   const fetchCountryBrief = async (countryCode: string) => {
     setBriefLoading(true)
@@ -41,6 +55,67 @@ export default function IntelPanel() {
     setCountryBrief(null)
     fetchCountryBrief(code)
   }
+
+  // Ask AI handler
+  const handleAskAI = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!question.trim() || askLoading) return
+
+    const userMessage: ChatMessage = {
+      role: 'user',
+      content: question.trim(),
+      timestamp: new Date().toISOString(),
+    }
+
+    setChatHistory((prev) => [...prev, userMessage])
+    setQuestion('')
+    setAskLoading(true)
+
+    try {
+      const res = await fetch('/api/ask', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          question: userMessage.content,
+          context: selectedCountry ? `User is viewing ${selectedCountry} risk profile` : undefined,
+        }),
+      })
+
+      if (res.ok) {
+        const data = await res.json()
+        const assistantMessage: ChatMessage = {
+          role: 'assistant',
+          content: data.answer,
+          timestamp: data.generated_at,
+        }
+        setChatHistory((prev) => [...prev, assistantMessage])
+      } else {
+        const errorMessage: ChatMessage = {
+          role: 'assistant',
+          content: 'Sorry, I encountered an error processing your request. Please try again.',
+          timestamp: new Date().toISOString(),
+        }
+        setChatHistory((prev) => [...prev, errorMessage])
+      }
+    } catch (e) {
+      console.error('Ask AI error:', e)
+      const errorMessage: ChatMessage = {
+        role: 'assistant',
+        content: 'Unable to connect to the AI service. Please check your connection.',
+        timestamp: new Date().toISOString(),
+      }
+      setChatHistory((prev) => [...prev, errorMessage])
+    } finally {
+      setAskLoading(false)
+    }
+  }
+
+  // Scroll to bottom when new messages arrive
+  useEffect(() => {
+    if (chatContainerRef.current) {
+      chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight
+    }
+  }, [chatHistory])
 
   return (
     <div className="space-y-4">
@@ -171,24 +246,85 @@ export default function IntelPanel() {
         </div>
       )}
 
-      {/* AI Chat (placeholder for future) */}
+      {/* AI Chat */}
       <div className="panel p-4">
         <div className="flex items-center gap-2 mb-3">
           <Brain className="w-4 h-4 text-amber-400" />
           <h4 className="text-sm font-medium">Ask AI</h4>
+          {chatHistory.length > 0 && (
+            <button
+              onClick={() => setChatHistory([])}
+              className="ml-auto text-xs text-gray-500 hover:text-gray-300"
+            >
+              Clear
+            </button>
+          )}
         </div>
-        <div className="relative">
+
+        {/* Chat History */}
+        {chatHistory.length > 0 && (
+          <div
+            ref={chatContainerRef}
+            className="mb-3 max-h-64 overflow-y-auto space-y-3 scrollbar-thin scrollbar-thumb-wm-border"
+          >
+            {chatHistory.map((msg, idx) => (
+              <div
+                key={idx}
+                className={`text-sm ${
+                  msg.role === 'user' ? 'text-right' : 'text-left'
+                }`}
+              >
+                <div
+                  className={`inline-block max-w-[90%] p-2 rounded-lg ${
+                    msg.role === 'user'
+                      ? 'bg-wm-accent/20 text-gray-200'
+                      : 'bg-wm-bg text-gray-300'
+                  }`}
+                >
+                  <p className="whitespace-pre-wrap">{msg.content}</p>
+                  <p className="text-xs text-gray-500 mt-1">
+                    {new Date(msg.timestamp).toLocaleTimeString()}
+                  </p>
+                </div>
+              </div>
+            ))}
+            {askLoading && (
+              <div className="text-left">
+                <div className="inline-block bg-wm-bg p-2 rounded-lg">
+                  <div className="flex items-center gap-2 text-gray-400">
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span className="text-sm">Analyzing...</span>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Input Form */}
+        <form onSubmit={handleAskAI} className="relative">
           <input
             type="text"
+            value={question}
+            onChange={(e) => setQuestion(e.target.value)}
             placeholder="Ask about global events, risks, analysis..."
-            className="w-full bg-wm-bg border border-wm-border rounded-lg px-3 py-2 pr-10 text-sm focus:outline-none focus:border-wm-accent"
+            disabled={askLoading}
+            className="w-full bg-wm-bg border border-wm-border rounded-lg px-3 py-2 pr-10 text-sm focus:outline-none focus:border-wm-accent disabled:opacity-50"
           />
-          <button className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-wm-accent">
-            <MessageSquare className="w-4 h-4" />
+          <button
+            type="submit"
+            disabled={!question.trim() || askLoading}
+            className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-wm-accent disabled:opacity-50 disabled:hover:text-gray-400"
+          >
+            {askLoading ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <Send className="w-4 h-4" />
+            )}
           </button>
-        </div>
+        </form>
         <p className="text-xs text-gray-500 mt-2">
-          Powered by Databricks Foundation Models
+          Powered by Claude Sonnet 4.5 via Databricks Foundation Models
         </p>
       </div>
     </div>

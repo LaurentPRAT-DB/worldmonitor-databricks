@@ -127,9 +127,14 @@ export default function MapView() {
 
     // Add wildfire markers
     if (selectedLayers.includes('fires')) {
-      // Cluster fires for performance - show only high confidence
-      const highConfidenceFires = wildfires.filter((f) => f.confidence >= 80)
-      highConfidenceFires.slice(0, 500).forEach((fire) => {
+      // Filter fires - confidence is 'h' (high), 'n' (nominal), or 'l' (low)
+      // Show high and nominal confidence fires
+      const filteredFires = wildfires.filter(
+        (f) => f.confidence === 'h' || f.confidence === 'n' || f.confidence === 'high' || f.confidence === 'nominal'
+      )
+      // If no fires match the filter, show all fires (backwards compatibility)
+      const firesToShow = filteredFires.length > 0 ? filteredFires : wildfires
+      firesToShow.slice(0, 500).forEach((fire) => {
         if (isValidCoordinate(fire.latitude, fire.longitude)) {
           const el = createMarkerElement('fire', fire.brightness)
           const marker = new maplibregl.Marker({ element: el, anchor: 'center' })
