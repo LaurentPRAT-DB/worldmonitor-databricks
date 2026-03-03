@@ -34,21 +34,20 @@ const navItems = [
 export default function Sidebar() {
   const location = useLocation()
   const [collapsed, setCollapsed] = useState(false)
-  const setActiveLayer = useAppStore((state) => state.setActiveLayer)
+  const selectedLayers = useAppStore((state) => state.selectedLayers)
+  const toggleLayer = useAppStore((state) => state.toggleLayer)
 
-  const handleNavClick = (layer: string | LayerType | undefined) => {
-    // Automatically enable the associated layer when navigating
-    // For Overview, show default layers
-    // For specific data pages with map layers, show only that layer
-    // For pages without map layers (Markets, Cyber, etc.), don't change layers
-    if (layer === 'overview') {
-      // Overview: restore default layers
-      setActiveLayer(null)
-    } else if (layer && layer !== undefined) {
-      // Specific layer page: show only that layer
-      setActiveLayer(layer as LayerType)
+  const handleLayerToggle = (e: React.MouseEvent, layer: LayerType | undefined) => {
+    // Toggle the layer on/off when clicking the layer indicator
+    if (layer) {
+      e.preventDefault() // Prevent navigation when toggling layer
+      toggleLayer(layer)
     }
-    // Items without layers (Markets, Cyber, Intel, Infra) don't affect map
+  }
+
+  const isLayerSelected = (layer: string | LayerType | undefined): boolean => {
+    if (!layer || layer === 'overview') return false
+    return selectedLayers.includes(layer as LayerType)
   }
 
   return (
@@ -74,22 +73,52 @@ export default function Sidebar() {
         <ul className="space-y-1 px-2">
           {navItems.map((item) => {
             const isActive = location.pathname === item.path
+            const layerSelected = isLayerSelected(item.layer)
+            const hasLayer = item.layer && item.layer !== 'overview'
+
             return (
               <li key={item.path}>
-                <Link
-                  to={item.path}
-                  onClick={() => handleNavClick(item.layer)}
-                  className={`flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all ${
-                    isActive
-                      ? 'bg-wm-accent/20 text-white'
-                      : 'text-gray-400 hover:bg-wm-border hover:text-white'
-                  }`}
-                >
-                  <item.icon className={`w-5 h-5 ${isActive ? item.color : ''}`} />
-                  {!collapsed && (
-                    <span className="text-sm font-medium">{item.label}</span>
+                <div className="flex items-center">
+                  {/* Layer toggle indicator */}
+                  {hasLayer && (
+                    <button
+                      onClick={(e) => handleLayerToggle(e, item.layer as LayerType)}
+                      className={`w-2 h-8 rounded-l transition-all ${
+                        layerSelected
+                          ? item.color.replace('text-', 'bg-')
+                          : 'bg-gray-700 hover:bg-gray-600'
+                      }`}
+                      title={layerSelected ? `Hide ${item.label} layer` : `Show ${item.label} layer`}
+                    />
                   )}
-                </Link>
+                  {!hasLayer && <div className="w-2" />}
+
+                  {/* Navigation link */}
+                  <Link
+                    to={item.path}
+                    className={`flex-1 flex items-center gap-3 px-3 py-2.5 rounded-r-lg transition-all ${
+                      isActive
+                        ? 'bg-wm-accent/20 text-white'
+                        : 'text-gray-400 hover:bg-wm-border hover:text-white'
+                    } ${hasLayer && layerSelected ? 'border-l-0' : ''}`}
+                  >
+                    <item.icon className={`w-5 h-5 ${layerSelected ? item.color : isActive ? item.color : ''}`} />
+                    {!collapsed && (
+                      <>
+                        <span className="text-sm font-medium flex-1">{item.label}</span>
+                        {hasLayer && (
+                          <span className={`text-xs px-1.5 py-0.5 rounded ${
+                            layerSelected
+                              ? 'bg-green-500/20 text-green-400'
+                              : 'bg-gray-700 text-gray-500'
+                          }`}>
+                            {layerSelected ? 'ON' : 'OFF'}
+                          </span>
+                        )}
+                      </>
+                    )}
+                  </Link>
+                </div>
               </li>
             )
           })}
