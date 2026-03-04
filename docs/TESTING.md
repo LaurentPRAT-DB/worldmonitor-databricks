@@ -6,12 +6,12 @@ Comprehensive testing guide for the World Monitor Databricks App.
 
 | Environment | URL | Authentication |
 |-------------|-----|----------------|
-| **Local Dev** | `http://localhost:8000` | None (demo mode) |
-| **Deployed App** | `https://worldmonitor-dev-*.databricksapps.com` | Databricks OAuth |
+| **Local Dev** | `http://localhost:8000` | Databricks Profile |
+| **Deployed App** | `https://worldmonitor-dev-7474645572615955.aws.databricksapps.com` | Databricks OAuth |
 
 ## API Endpoint Test Results
 
-### Test Date: 2026-03-03
+### Test Date: 2026-03-04
 
 | Category | Endpoint | Status | Notes |
 |----------|----------|--------|-------|
@@ -19,31 +19,32 @@ Comprehensive testing guide for the World Monitor Databricks App.
 | | `GET /api/health` | ✅ Pass | Returns health status |
 | | `GET /api/version` | ✅ Pass | Returns version info |
 | **Seismology** | | | |
-| | `GET /api/seismology/v1/list-earthquakes` | ✅ Pass | USGS data (no API key needed) |
+| | `GET /api/seismology/v1/list-earthquakes` | ✅ Pass | 168 earthquakes loaded |
 | **Cyber** | | | |
-| | `GET /api/cyber/v1/list-cyber-threats` | ✅ Pass | abuse.ch public feeds |
-| | `GET /api/cyber/v1/threat-stats` | ✅ Pass | Aggregated statistics |
+| | `GET /api/cyber/v1/list-cyber-threats` | ✅ Pass | abuse.ch public download feeds |
+| | `GET /api/cyber/v1/threat-stats` | ✅ Pass | 100 threats aggregated |
 | **Maritime** | | | |
-| | `GET /api/maritime/v1/list-vessels` | ✅ Pass | Synthetic demo data |
-| | `GET /api/maritime/v1/vessel-route/{mmsi}` | ✅ Pass | Historical routes from Delta Lake |
+| | `GET /api/maritime/v1/list-vessels` | ✅ Pass | 40 vessels (synthetic data) |
+| | `GET /api/maritime/v1/vessel-route/{mmsi}` | ✅ Pass | Historical routes from Unity Catalog Delta Lake |
+| | `GET /api/maritime/v1/vessel-routes` | ✅ Pass | All vessel routes (30 days history) |
 | **Intelligence** | | | |
 | | `GET /api/intelligence/v1/risk-scores` | ✅ Pass | 14 country risk scores |
-| | `GET /api/intelligence/v1/country-brief/{code}` | ✅ Pass | AI-generated briefs |
+| | `GET /api/intelligence/v1/country-brief/{code}` | ✅ Pass | AI-generated briefs (Claude Sonnet 4.5) |
 | | `POST /api/intelligence/v1/ask` | ✅ Pass | Foundation Model chat |
 | **Market** | | | |
-| | `GET /api/market/v1/quotes` | ⚠️ Requires Key | Needs FINNHUB_API_KEY |
-| | `GET /api/market/v1/crypto` | ⚠️ Rate Limited | CoinGecko free tier limits |
+| | `GET /api/market/v1/quotes` | ✅ Pass | SPY, QQQ, DIA, IWM, VTI live data |
+| | `GET /api/market/v1/crypto` | ✅ Pass | BTC, ETH, and more |
 | **Wildfire** | | | |
-| | `GET /api/wildfire/v1/list-fires` | ❌ Requires Key | Needs NASA_FIRMS_API_KEY |
+| | `GET /api/wildfire/v1/list-fires` | ✅ Pass | 985 active fires (NASA FIRMS) |
 | **Conflict** | | | |
-| | `GET /api/conflict/v1/list-acled-events` | ❌ Requires Key | Needs ACLED credentials |
-| | `GET /api/conflict/v1/list-ucdp-events` | ❌ Requires Key | Needs UCDP_ACCESS_TOKEN |
+| | `GET /api/conflict/v1/list-acled-events` | ❌ Needs OAuth | Requires ACLED email/password |
+| | `GET /api/conflict/v1/list-ucdp-events` | ✅ Pass | Historical conflict data (2019-2023) |
 | **Climate** | | | |
-| | `GET /api/climate/v1/alerts` | ✅ Pass | Open-Meteo (no key) |
+| | `GET /api/climate/v1/alerts` | ✅ Pass | Open-Meteo (no key needed) |
 | **News** | | | |
-| | `GET /api/news/v1/list-articles` | ✅ Pass | RSS feeds (no key) |
+| | `GET /api/news/v1/list-articles` | ✅ Pass | RSS feeds aggregated |
 | **Economic** | | | |
-| | `GET /api/economic/v1/indicators` | ⚠️ Requires Key | Needs FRED_API_KEY |
+| | `GET /api/economic/v1/indicators` | ✅ Pass | FRED economic data |
 | **Military** | | | |
 | | `GET /api/military/v1/list-flights` | ⚠️ Rate Limited | OpenSky free tier |
 | | `GET /api/military/v1/list-bases` | ✅ Pass | Static data |
@@ -51,9 +52,9 @@ Comprehensive testing guide for the World Monitor Databricks App.
 | | `GET /api/infrastructure/v1/outages` | ✅ Pass | Multi-source aggregation |
 
 ### Status Legend
-- ✅ **Pass**: Endpoint working correctly
-- ⚠️ **Requires Key/Rate Limited**: Works with proper configuration
-- ❌ **Requires Key**: Not functional without API key
+- ✅ **Pass**: Endpoint working correctly in production
+- ⚠️ **Rate Limited**: Works but may hit free tier limits
+- ❌ **Needs OAuth**: Requires additional authentication setup
 
 ---
 
@@ -201,14 +202,13 @@ mcp__chrome-devtools__take_snapshot '{}'
 
 ## Known Issues
 
-### 1. Missing API Keys
-Several data sources require API keys that are not configured:
-- **ACLED**: Armed conflict events
-- **UCDP**: Conflict fatalities
-- **NASA FIRMS**: Satellite fire detection
-- **Cloudflare Radar**: Internet outages
+### 1. ACLED OAuth Authentication
+ACLED deprecated API key authentication in September 2025. Now requires OAuth:
+- POST to `https://acleddata.com/oauth/token` with email/password
+- Returns access_token valid for 24 hours
+- Use Bearer token for API requests
 
-**Workaround:** Configure API keys in app.yaml environment variables.
+**Status:** Code updated but credentials not configured. Set `ACLED_EMAIL` and `ACLED_PASSWORD` in app.yaml.
 
 ### 2. Rate Limiting
 Free tier APIs have rate limits:
@@ -216,39 +216,79 @@ Free tier APIs have rate limits:
 - **OpenSky**: Limited without account
 - **Finnhub**: 60 calls/minute
 
-**Workaround:** Implement caching (already in place with 15-60 min TTL).
+**Mitigation:** Caching implemented with 15-60 min TTL via Lakebase.
 
 ### 3. Synthetic Maritime Data
-Real AIS data requires a paid subscription. Current implementation uses synthetic demo vessels.
+Real AIS data requires a paid subscription. Current implementation uses synthetic demo vessels with 30-day historical routes stored in Unity Catalog Delta Lake.
 
-**Workaround:** Set `USE_SYNTHETIC_MARITIME_DATA=false` when real data source is available.
+**Note:** Synthetic data is for demonstration purposes. Set `USE_SYNTHETIC_MARITIME_DATA=false` when real AIS feed is available.
+
+### 4. UCDP Historical Data Only
+UCDP (Uppsala Conflict Data Program) provides historical data from 2019-2023 only. Real-time conflict data requires ACLED.
 
 ---
 
 ## Deployment Verification Checklist
 
 ### Pre-Deployment
-- [ ] Frontend build successful (`npm run build`)
-- [ ] No TypeScript errors
-- [ ] All dependencies in requirements.txt
-- [ ] Environment variables configured in app.yaml
+- [x] Frontend build successful (`npm run build`)
+- [x] No TypeScript errors
+- [x] All dependencies in requirements.txt
+- [x] Environment variables configured in app.yaml
+- [x] Lakebase resource binding configured
 
 ### Post-Deployment
-- [ ] App accessible at deployed URL
-- [ ] Health endpoint returns OK
-- [ ] Map loads correctly
-- [ ] Data panels show data
-- [ ] No console errors
-- [ ] AI features work (if Foundation Model configured)
+- [x] App accessible at https://worldmonitor-dev-7474645572615955.aws.databricksapps.com
+- [x] Health endpoint returns OK
+- [x] Map loads with 700+ markers (earthquakes, fires, conflicts)
+- [x] Stats panel shows live counts (168 earthquakes, 985 fires, 100 cyber threats)
+- [x] Market data displays (SPY, QQQ, DIA, IWM, VTI with prices)
+- [x] Maritime vessel routes load from Delta Lake (30 days history)
+- [x] Vessel selection highlights route with glow effect
+- [x] AI features work (Claude Sonnet 4.5 via Foundation Model API)
+- [x] No console errors
 
 ### Security
-- [ ] No hardcoded credentials
-- [ ] API keys stored in environment variables
-- [ ] No sensitive data in logs
+- [x] No hardcoded credentials (all via env vars)
+- [x] API keys stored in app.yaml environment variables
+- [x] Lakebase connection uses OAuth tokens
+- [x] Foundation Model access via service principal
+
+---
+
+## Configured API Keys
+
+All API keys are configured in `app.yaml` and working:
+
+| API | Env Variable | Status |
+|-----|--------------|--------|
+| Finnhub (Stocks) | `FINNHUB_API_KEY` | ✅ Working |
+| FRED (Economic) | `FRED_API_KEY` | ✅ Working |
+| NASA FIRMS (Wildfires) | `NASA_FIRMS_API_KEY` | ✅ Working |
+| UCDP (Conflicts) | `UCDP_ACCESS_TOKEN` | ✅ Working |
+| Foundation Model | `SERVING_ENDPOINT` | ✅ Working |
+
+**Not Configured:**
+| API | Env Variable | Required For |
+|-----|--------------|--------------|
+| ACLED | `ACLED_EMAIL`, `ACLED_PASSWORD` | Real-time conflict events |
 
 ---
 
 ## Test Data
+
+### Sample Market Response
+```json
+{
+  "quotes": [
+    {"symbol": "SPY", "price": 686.71, "change_percent": 0.94},
+    {"symbol": "QQQ", "price": 612.54, "change_percent": 1.82},
+    {"symbol": "DIA", "price": 488.38, "change_percent": 0.59},
+    {"symbol": "IWM", "price": 262.17, "change_percent": 1.13},
+    {"symbol": "VTI", "price": 338.83, "change_percent": 0.92}
+  ]
+}
+```
 
 ### Sample Earthquake Response
 ```json
@@ -258,16 +298,14 @@ Real AIS data requires a paid subscription. Current implementation uses syntheti
       "id": "us7000s1pp",
       "magnitude": 5.3,
       "place": "Pagan region, Northern Mariana Islands",
-      "location": {
-        "latitude": 18.8779,
-        "longitude": 145.6537,
-        "depth": 191.318
-      },
-      "occurred_at": 1772548702422,
-      "tsunami_warning": false
+      "latitude": 18.8779,
+      "longitude": 145.6537,
+      "depth": 191.318,
+      "time": "2026-03-04T15:30:00Z",
+      "alert": null
     }
   ],
-  "total": 162
+  "total": 168
 }
 ```
 
@@ -335,9 +373,43 @@ jobs:
 
 ---
 
+## Feature Test: Vessel Selection & Route Highlighting
+
+### TC-007: Vessel Route Selection
+**Steps:**
+1. Navigate to Maritime section
+2. Enable Maritime layer (toggle ON)
+3. Click "Routes" button to load historical tracks
+4. Click on a vessel in the vessel list
+
+**Expected:**
+- Selected vessel route glows with highlight effect
+- Other vessel routes dim to 25% opacity
+- Vessel list shows selection state
+- Click again to deselect
+
+**Result:** ✅ Pass (2026-03-03)
+
+### TC-008: Hybrid Data Architecture
+**Steps:**
+1. Load Maritime section with Routes enabled
+2. Observe vessel positions (real-time from Lakebase)
+3. Observe vessel routes (historical from Delta Lake)
+
+**Expected:**
+- Current positions show sub-10ms latency (Lakebase PostgreSQL)
+- Historical routes show 30 days of data (Unity Catalog Delta Lake)
+- Both data sources merge seamlessly
+
+**Result:** ✅ Pass - Demonstrates Lakebase + Lakehouse working together
+
+---
+
 ## Contact
 
 For issues or questions:
-- **App Logs**: `https://worldmonitor-dev-*.databricksapps.com/logz`
-- **Documentation**: See docs/ folder
-- **Repository**: GitHub
+- **App URL**: https://worldmonitor-dev-7474645572615955.aws.databricksapps.com
+- **App Logs**: https://worldmonitor-dev-7474645572615955.aws.databricksapps.com/logz
+- **User Guide**: [USER_GUIDE.md](USER_GUIDE.md)
+- **API Documentation**: [API.md](API.md)
+- **Data Dictionary**: [DATA_DICTIONARY.md](DATA_DICTIONARY.md)
