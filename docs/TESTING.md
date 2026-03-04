@@ -46,8 +46,8 @@ Comprehensive testing guide for the World Monitor Databricks App.
 | **Economic** | | | |
 | | `GET /api/economic/v1/indicators` | ✅ Pass | FRED economic data |
 | **Military** | | | |
-| | `GET /api/military/v1/list-flights` | ⚠️ Rate Limited | OpenSky free tier |
-| | `GET /api/military/v1/list-bases` | ✅ Pass | Static data |
+| | `GET /api/military/v1/list-flights` | ❌ Not Implemented | Stub only (no OpenSky integration) |
+| | `GET /api/military/v1/list-bases` | ❌ Not Implemented | Stub only (no static data) |
 | **Infrastructure** | | | |
 | | `GET /api/infrastructure/v1/outages` | ✅ Pass | Multi-source aggregation |
 
@@ -225,6 +225,13 @@ Real AIS data requires a paid subscription. Current implementation uses syntheti
 
 ### 4. UCDP Historical Data Only
 UCDP (Uppsala Conflict Data Program) provides historical data from 2019-2023 only. Real-time conflict data requires ACLED.
+
+### 5. Military Tracking Not Implemented
+The Military section (`/military`) displays 0 items because:
+- **OpenSky Integration**: Not implemented (placeholder code only)
+- **Military Bases**: No static data loaded
+
+**To implement**: Would require OpenSky Network API integration for flight tracking and a curated dataset of military bases.
 
 ---
 
