@@ -508,6 +508,131 @@ GET /api/infrastructure/v1/outages
 
 ---
 
+## Military API
+
+### List Military Flights
+
+```http
+GET /api/military/v1/list-military-flights
+```
+
+**Description:** Returns synthetic military aircraft positions focused on Persian Gulf / Strait of Hormuz region.
+
+**Response:**
+```json
+{
+  "flights": [
+    {
+      "icao24": "ae1234",
+      "callsign": "NAVY90",
+      "origin_country": "United States",
+      "position": {
+        "latitude": 26.5,
+        "longitude": 52.3,
+        "altitude": 5500
+      },
+      "velocity": 250,
+      "heading": 180,
+      "classification": "military",
+      "aircraft_type": "P-8A Poseidon",
+      "mission_type": "Maritime Patrol",
+      "timestamp": 1709510400000
+    }
+  ],
+  "total": 17
+}
+```
+
+**Aircraft Types:**
+| Country | Aircraft | Mission |
+|---------|----------|---------|
+| United States | P-8A Poseidon | Maritime Patrol |
+| United States | RC-135V/W Rivet Joint | SIGINT/ELINT |
+| United States | MQ-9 Reaper | ISR |
+| Iran | F-14A Tomcat | Air Defense Patrol |
+| Iran | Su-35S Flanker-E | Combat Air Patrol |
+| Iran | Shahed-136 | Maritime Surveillance |
+| Iran | Bell 212/214 | Naval Support |
+| UAE | GlobalEye AEW&C | Airborne Early Warning |
+| Saudi Arabia | E-3A Sentry AWACS | Airborne Early Warning |
+
+---
+
+### List Military Bases
+
+```http
+GET /api/military/v1/list-military-bases
+```
+
+**Description:** Returns regional military bases (US/Coalition and Iranian) in the Persian Gulf area.
+
+**Response:**
+```json
+{
+  "bases": [
+    {
+      "id": "base-001",
+      "name": "Al Udeid Air Base",
+      "country": "Qatar",
+      "position": {
+        "latitude": 25.1173,
+        "longitude": 51.315
+      },
+      "base_type": "air",
+      "operator": "US Air Force / Qatar Air Force",
+      "status": "heightened"
+    }
+  ],
+  "total": 14
+}
+```
+
+**Base Locations:**
+| Base | Country | Type | Operator |
+|------|---------|------|----------|
+| Al Udeid Air Base | Qatar | Air | US Air Force / Qatar Air Force |
+| Naval Support Activity Bahrain | Bahrain | Naval | US Navy 5th Fleet |
+| Al Dhafra Air Base | UAE | Air | US Air Force / UAE Air Force |
+| Camp Arifjan | Kuwait | Army | US Army Central |
+| Prince Sultan Air Base | Saudi Arabia | Air | US/Royal Saudi Air Force |
+| Bandar Abbas Naval Base | Iran | Naval | Islamic Republic of Iran Navy |
+| Bushehr Air Base | Iran | Air | IRIAF |
+| Chabahar Naval Base | Iran | Naval | IRGC Navy |
+| Konarak Naval Base | Iran | Naval | IRGC Navy |
+| Jask Forward Operating Base | Iran | Naval | IRGC Navy |
+| Isfahan Air Base (8th TFB) | Iran | Air | IRIAF |
+| Diego Garcia | BIOT | Joint | US Navy / Royal Navy |
+| Camp Lemonnier | Djibouti | Joint | US Africa Command |
+| Masirah Air Base | Oman | Air | Royal Air Force of Oman |
+
+---
+
+### Get Theater Posture
+
+```http
+GET /api/military/v1/theater-posture/{theater}
+```
+
+**Path Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `theater` | string | Theater name (e.g., `persian-gulf`) |
+
+**Response:**
+```json
+{
+  "theater": "persian-gulf",
+  "alert_level": "elevated",
+  "assessment": "Iranian naval and air forces conducting increased patrols. IRGC fast boats observed near commercial shipping lanes. US 5th Fleet has increased maritime patrol sorties.",
+  "last_updated": "2026-03-05T10:00:00Z"
+}
+```
+
+**Note:** Military data is synthetic for demonstration purposes.
+
+---
+
 ## Cyber API
 
 ### Get Threats
