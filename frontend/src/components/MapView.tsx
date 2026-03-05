@@ -44,6 +44,8 @@ export default function MapView() {
     wildfires,
     vessels,
     vesselRoutes,
+    militaryFlights,
+    militaryBases,
     selectedLayers,
     showVesselRoutes,
     selectedVessel,
@@ -198,7 +200,58 @@ export default function MapView() {
         }
       })
     }
-  }, [conflicts, earthquakes, wildfires, vessels, selectedLayers])
+
+    // Add military aircraft markers
+    if (selectedLayers.includes('military')) {
+      militaryFlights.forEach((flight) => {
+        if (isValidCoordinate(flight.latitude, flight.longitude)) {
+          const el = createMarkerElement('aircraft', 1)
+          const popup = new maplibregl.Popup({ offset: 25, closeButton: false })
+            .setHTML(`
+              <div class="text-xs">
+                <div class="font-bold text-purple-400">${flight.callsign || flight.icao24}</div>
+                <div class="text-gray-300">${flight.aircraft_type || 'Unknown'}</div>
+                <div class="text-gray-400">${flight.origin_country}</div>
+                <div class="text-gray-400">Alt: ${flight.altitude?.toFixed(0) || '?'} ft</div>
+                <div class="text-gray-400">Speed: ${flight.velocity?.toFixed(0) || '?'} kts</div>
+                ${flight.mission_type ? `<div class="text-purple-300">${flight.mission_type}</div>` : ''}
+              </div>
+            `)
+
+          const marker = new maplibregl.Marker({ element: el, anchor: 'center' })
+            .setLngLat([flight.longitude, flight.latitude])
+            .setPopup(popup)
+            .addTo(map.current!)
+
+          markersRef.current.push(marker)
+        }
+      })
+
+      // Add military base markers
+      militaryBases.forEach((base) => {
+        if (isValidCoordinate(base.latitude, base.longitude)) {
+          const el = createMarkerElement('base', 1)
+          const popup = new maplibregl.Popup({ offset: 25, closeButton: false })
+            .setHTML(`
+              <div class="text-xs">
+                <div class="font-bold text-amber-400">${base.name}</div>
+                <div class="text-gray-300">${base.country}</div>
+                <div class="text-gray-400">${base.base_type.toUpperCase()} base</div>
+                ${base.operator ? `<div class="text-gray-400">${base.operator}</div>` : ''}
+                <div class="text-xs mt-1 ${base.status === 'heightened' ? 'text-orange-400' : 'text-green-400'}">${base.status.toUpperCase()}</div>
+              </div>
+            `)
+
+          const marker = new maplibregl.Marker({ element: el, anchor: 'center' })
+            .setLngLat([base.longitude, base.latitude])
+            .setPopup(popup)
+            .addTo(map.current!)
+
+          markersRef.current.push(marker)
+        }
+      })
+    }
+  }, [conflicts, earthquakes, wildfires, vessels, militaryFlights, militaryBases, selectedLayers])
 
   // Fetch routes immediately when showVesselRoutes becomes true
   useEffect(() => {
@@ -569,6 +622,10 @@ function createMarkerElement(type: string, intensity: number): HTMLDivElement {
     ? 6
     : type === 'conflict'
     ? Math.max(6, Math.min(16, intensity / 2 + 6))
+    : type === 'base'
+    ? 10
+    : type === 'aircraft'
+    ? 7
     : 8
 
   const colors: Record<string, string> = {
@@ -577,6 +634,7 @@ function createMarkerElement(type: string, intensity: number): HTMLDivElement {
     fire: 'rgba(249, 115, 22, 0.8)',
     vessel: 'rgba(6, 182, 212, 0.8)',
     aircraft: 'rgba(147, 51, 234, 0.8)',
+    base: 'rgba(245, 158, 11, 0.9)',  // Amber for bases
   }
 
   // Use fixed positioning styles to prevent layout issues

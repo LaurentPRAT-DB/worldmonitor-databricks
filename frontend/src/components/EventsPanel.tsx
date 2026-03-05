@@ -18,7 +18,7 @@ interface EventsPanelProps {
 }
 
 export default function EventsPanel({ type }: EventsPanelProps) {
-  const { conflicts, earthquakes, wildfires, vessels } = useAppStore()
+  const { conflicts, earthquakes, wildfires, vessels, militaryFlights, militaryBases } = useAppStore()
   const [expanded, setExpanded] = useState<string | null>(null)
   const [sortBy, setSortBy] = useState<string>('date')
 
@@ -51,7 +51,7 @@ export default function EventsPanel({ type }: EventsPanelProps) {
       title: 'MILITARY ACTIVITY',
       icon: Plane,
       color: 'text-purple-400',
-      data: [],
+      data: militaryFlights,
     },
   }
 
@@ -98,6 +98,9 @@ export default function EventsPanel({ type }: EventsPanelProps) {
         )}
         {type === 'maritime' && (
           <VesselList vessels={vessels} />
+        )}
+        {type === 'military' && (
+          <MilitaryList flights={militaryFlights} bases={militaryBases} />
         )}
       </div>
     </div>
@@ -304,6 +307,101 @@ function VesselList({ vessels }: { vessels: any[] }) {
           </div>
         )
       })}
+    </div>
+  )
+}
+
+function MilitaryList({ flights, bases }: { flights: any[], bases: any[] }) {
+  // Group flights by country
+  const flightsByCountry = flights.reduce((acc, flight) => {
+    const country = flight.origin_country || 'Unknown'
+    if (!acc[country]) acc[country] = []
+    acc[country].push(flight)
+    return acc
+  }, {} as Record<string, any[]>)
+
+  return (
+    <div className="p-3 space-y-4">
+      {/* Flight Summary by Country */}
+      <div>
+        <h4 className="text-xs text-gray-400 mb-2">ACTIVE AIRCRAFT BY COUNTRY</h4>
+        <div className="grid grid-cols-2 gap-2">
+          {(Object.entries(flightsByCountry) as [string, any[]][])
+            .sort((a, b) => b[1].length - a[1].length)
+            .map(([country, countryFlights]) => (
+              <div key={country} className="bg-wm-bg rounded p-2">
+                <div className="text-xs text-gray-400">{country}</div>
+                <div className="text-lg font-bold text-purple-400">{countryFlights.length}</div>
+                <div className="text-xs text-gray-500">aircraft</div>
+              </div>
+            ))}
+        </div>
+      </div>
+
+      {/* Active Flights List */}
+      <div>
+        <h4 className="text-xs text-gray-400 mb-2">ACTIVE FLIGHTS ({flights.length})</h4>
+        <div className="space-y-2 max-h-48 overflow-y-auto">
+          {flights.slice(0, 20).map((flight) => (
+            <div key={flight.icao24} className="bg-wm-bg rounded p-2">
+              <div className="flex items-center justify-between">
+                <div>
+                  <span className="text-sm font-medium text-purple-400">
+                    {flight.callsign || flight.icao24}
+                  </span>
+                  <span className="text-xs text-gray-500 ml-2">{flight.origin_country}</span>
+                </div>
+                <div className="text-xs text-gray-400">
+                  {flight.altitude?.toFixed(0) || '?'} ft
+                </div>
+              </div>
+              <div className="text-xs text-gray-400 mt-1">
+                {flight.aircraft_type || 'Unknown aircraft'}
+                {flight.mission_type && (
+                  <span className="text-purple-300 ml-2">• {flight.mission_type}</span>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Military Bases */}
+      <div>
+        <h4 className="text-xs text-gray-400 mb-2">REGIONAL BASES ({bases.length})</h4>
+        <div className="space-y-2 max-h-48 overflow-y-auto">
+          {bases.map((base) => (
+            <div key={base.id} className="bg-wm-bg rounded p-2">
+              <div className="flex items-center justify-between">
+                <div className="text-sm font-medium text-amber-400">{base.name}</div>
+                <span className={`text-xs px-1.5 rounded ${
+                  base.status === 'heightened' ? 'bg-orange-500/20 text-orange-400' : 'bg-green-500/20 text-green-400'
+                }`}>
+                  {base.status}
+                </span>
+              </div>
+              <div className="text-xs text-gray-400">
+                {base.country} • {base.base_type.toUpperCase()}
+              </div>
+              {base.operator && (
+                <div className="text-xs text-gray-500">{base.operator}</div>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Persian Gulf Alert */}
+      <div className="bg-orange-500/10 border border-orange-500/30 rounded p-3">
+        <div className="flex items-center gap-2 mb-1">
+          <div className="w-2 h-2 bg-orange-400 rounded-full animate-pulse" />
+          <span className="text-xs font-medium text-orange-400">ELEVATED ALERT - STRAIT OF HORMUZ</span>
+        </div>
+        <p className="text-xs text-gray-400">
+          Iranian naval and air forces conducting increased patrols. IRGC fast boats observed near commercial shipping lanes.
+          US 5th Fleet has increased maritime patrol sorties.
+        </p>
+      </div>
     </div>
   )
 }

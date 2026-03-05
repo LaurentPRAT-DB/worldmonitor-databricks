@@ -93,6 +93,32 @@ interface RiskScore {
   climate_risk: number
 }
 
+interface MilitaryFlight {
+  icao24: string
+  callsign: string | null
+  origin_country: string
+  latitude: number
+  longitude: number
+  altitude: number
+  velocity: number
+  heading: number
+  classification: string
+  aircraft_type: string | null
+  mission_type: string | null
+  timestamp: number
+}
+
+interface MilitaryBase {
+  id: string
+  name: string
+  country: string
+  latitude: number
+  longitude: number
+  base_type: string
+  operator: string | null
+  status: string
+}
+
 interface Stats {
   conflicts: number
   earthquakes: number
@@ -115,6 +141,8 @@ interface AppState {
   cyberThreats: CyberThreat[]
   serviceStatuses: ServiceStatus[]
   riskScores: RiskScore[]
+  militaryFlights: MilitaryFlight[]
+  militaryBases: MilitaryBase[]
   stats: Stats
 
   // UI State
@@ -136,6 +164,7 @@ interface AppState {
   fetchCyberThreats: () => Promise<void>
   fetchInfrastructure: () => Promise<void>
   fetchRiskScores: () => Promise<void>
+  fetchMilitary: () => Promise<void>
   toggleLayer: (layer: LayerType) => void
   setActiveLayer: (layer: LayerType | null) => void
   setTimeRange: (days: number) => void
@@ -157,6 +186,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   cyberThreats: [],
   serviceStatuses: [],
   riskScores: [],
+  militaryFlights: [],
+  militaryBases: [],
   stats: {
     conflicts: 0,
     earthquakes: 0,
@@ -184,6 +215,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       get().fetchCyberThreats(),
       get().fetchInfrastructure(),
       get().fetchRiskScores(),
+      get().fetchMilitary(),
     ])
     set({ isLoading: false })
   },
@@ -381,6 +413,57 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
     } catch (e) {
       console.error('Failed to fetch risk scores:', e)
+    }
+  },
+
+  // Fetch military flights and bases
+  fetchMilitary: async () => {
+    try {
+      const [flightsRes, basesRes] = await Promise.all([
+        fetch(`${API_BASE}/military/v1/list-military-flights`),
+        fetch(`${API_BASE}/military/v1/list-military-bases`),
+      ])
+
+      if (flightsRes.ok) {
+        const data = await flightsRes.json()
+        // Map response to expected format
+        const flights = (data.flights || []).map((f: any) => ({
+          icao24: f.icao24,
+          callsign: f.callsign,
+          origin_country: f.origin_country,
+          latitude: f.position?.latitude || f.latitude,
+          longitude: f.position?.longitude || f.longitude,
+          altitude: f.position?.altitude || f.altitude || 0,
+          velocity: f.velocity || 0,
+          heading: f.heading || 0,
+          classification: f.classification || 'unknown',
+          aircraft_type: f.aircraft_type,
+          mission_type: f.mission_type,
+          timestamp: f.timestamp,
+        }))
+        set({
+          militaryFlights: flights,
+          stats: { ...get().stats, aircraft: data.total || flights.length },
+        })
+      }
+
+      if (basesRes.ok) {
+        const data = await basesRes.json()
+        // Map response to expected format
+        const bases = (data.bases || []).map((b: any) => ({
+          id: b.id,
+          name: b.name,
+          country: b.country,
+          latitude: b.position?.latitude || b.latitude,
+          longitude: b.position?.longitude || b.longitude,
+          base_type: b.base_type,
+          operator: b.operator,
+          status: b.status || 'active',
+        }))
+        set({ militaryBases: bases })
+      }
+    } catch (e) {
+      console.error('Failed to fetch military data:', e)
     }
   },
 
