@@ -46,8 +46,9 @@ Comprehensive testing guide for the World Monitor Databricks App.
 | **Economic** | | | |
 | | `GET /api/economic/v1/indicators` | ✅ Pass | FRED economic data |
 | **Military** | | | |
-| | `GET /api/military/v1/list-flights` | ❌ Not Implemented | Stub only (no OpenSky integration) |
-| | `GET /api/military/v1/list-bases` | ❌ Not Implemented | Stub only (no static data) |
+| | `GET /api/military/v1/list-military-flights` | ✅ Pass | Synthetic data (Persian Gulf focus) |
+| | `GET /api/military/v1/list-military-bases` | ✅ Pass | 14 regional bases (US/Coalition, Iran) |
+| | `GET /api/military/v1/theater-posture/{theater}` | ✅ Pass | Alert assessments (high for Persian Gulf) |
 | **Infrastructure** | | | |
 | | `GET /api/infrastructure/v1/outages` | ✅ Pass | Multi-source aggregation |
 
@@ -226,12 +227,13 @@ Real AIS data requires a paid subscription. Current implementation uses syntheti
 ### 4. UCDP Historical Data Only
 UCDP (Uppsala Conflict Data Program) provides historical data from 2019-2023 only. Real-time conflict data requires ACLED.
 
-### 5. Military Tracking Not Implemented
-The Military section (`/military`) displays 0 items because:
-- **OpenSky Integration**: Not implemented (placeholder code only)
-- **Military Bases**: No static data loaded
+### 5. Military Data is Synthetic
+The Military section displays synthetic data focused on Persian Gulf / Strait of Hormuz region:
+- **Aircraft**: Simulated flights (US Navy P-8, USAF RC-135/MQ-9, Iranian F-14/Su-35/drones, UAE/Saudi AEW)
+- **Bases**: 14 real base locations (Al Udeid, NSA Bahrain, Al Dhafra, Bandar Abbas, Bushehr, Jask, etc.)
+- **Theater Posture**: Elevated alert status for Strait of Hormuz reflecting Iran activity
 
-**To implement**: Would require OpenSky Network API integration for flight tracking and a curated dataset of military bases.
+**Note**: Real flight data would require OpenSky Network API integration.
 
 ---
 
