@@ -16,7 +16,7 @@ from typing import Optional, Any
 from contextlib import asynccontextmanager
 import asyncpg
 
-from .config import get_oauth_token, get_workspace_host, settings, IS_DATABRICKS_APP
+from .config import get_oauth_token, get_lakebase_credential, get_workspace_host, settings, IS_DATABRICKS_APP
 
 # Unity Catalog configuration for vessel history
 UC_CATALOG = os.environ.get("UC_CATALOG", "serverless_stable_3n0ihb_catalog")
@@ -49,11 +49,12 @@ class DatabasePool:
             return self._pool
 
     async def _create_pool(self) -> None:
-        """Create a new connection pool with current OAuth token."""
+        """Create a new connection pool with Lakebase Autoscaling credential."""
         try:
-            token = get_oauth_token()
+            # For Lakebase Autoscaling, use postgres.generate_database_credential()
+            token = get_lakebase_credential()
             if not token:
-                print("[db] No OAuth token available - falling back to demo mode")
+                print("[db] No Lakebase credential available - falling back to demo mode")
                 self._demo_mode = True
                 self._pool = None
                 return
@@ -70,7 +71,7 @@ class DatabasePool:
                 max_size=10,
                 command_timeout=30,
             )
-            print(f"[db] Connected to Lakebase: {settings.PGHOST}/{settings.PGDATABASE}")
+            print(f"[db] Connected to Lakebase Autoscaling: {settings.PGHOST}/{settings.PGDATABASE}")
         except Exception as e:
             print(f"[db] Lakebase connection failed: {e}")
             self._demo_mode = True

@@ -32,15 +32,16 @@ env:
   - name: ACLED_PASSWORD
     value: ""
 
-  # Lakebase database connection (auto-populated from resource)
+  # Lakebase Autoscaling database connection
+  # Note: Autoscaling not yet supported in Apps UI, so hardcoding connection details
+  # Project: worldmonitor-cache, Branch: production
   - name: PGHOST
-    valueFrom: cache_db.host
+    value: ep-winter-dawn-d2ev1vuh.database.us-east-1.cloud.databricks.com
   - name: PGPORT
-    valueFrom: cache_db.port
+    value: "5432"
   - name: PGDATABASE
-    valueFrom: cache_db.database
-  - name: PGUSER
-    valueFrom: cache_db.user
+    value: databricks_postgres
+  # PGUSER is dynamically determined from the authenticated identity (service principal or user)
 
   # SQL Warehouse ID for Unity Catalog queries
   - name: DATABRICKS_WAREHOUSE_ID
@@ -59,10 +60,8 @@ env:
     value: "24"
 
 resources:
-  - name: cache_db
-    database:
-      name: worldmonitor-cache
-      permission: CAN_CONNECT
+  # Note: Lakebase Autoscaling resources not yet supported in Apps UI
+  # Using hardcoded PGHOST above for worldmonitor-cache autoscaling project
   - name: sql_warehouse
     sql_warehouse:
       name: "Serverless Starter Warehouse"

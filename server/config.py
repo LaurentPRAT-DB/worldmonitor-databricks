@@ -10,6 +10,9 @@ from databricks.sdk import WorkspaceClient
 # Detect environment
 IS_DATABRICKS_APP = bool(os.environ.get("DATABRICKS_APP_NAME"))
 
+# Lakebase Autoscaling endpoint (for generating database credentials)
+LAKEBASE_ENDPOINT = "projects/worldmonitor-cache/branches/production/endpoints/primary"
+
 
 @lru_cache(maxsize=1)
 def get_workspace_client() -> WorkspaceClient:
@@ -26,7 +29,7 @@ def get_workspace_client() -> WorkspaceClient:
 
 
 def get_oauth_token() -> str:
-    """Get OAuth token for Lakebase/API authentication.
+    """Get OAuth token for general API authentication (Foundation Models, etc).
 
     Uses the SDK's authenticate() method which returns proper tokens
     for both OAuth and PAT authentication modes.
@@ -41,6 +44,42 @@ def get_oauth_token() -> str:
         return ""
     except Exception as e:
         print(f"[config] ERROR: Failed to obtain OAuth token: {e}")
+        return ""
+
+
+def get_lakebase_credential() -> str:
+    """Get database credential for Lakebase Autoscaling authentication.
+
+    For Lakebase Autoscaling, we must use postgres.generate_database_credential()
+    instead of the generic workspace OAuth token. This returns a short-lived
+    token (1 hour) specifically for PostgreSQL authentication.
+
+    Returns empty string if credential cannot be obtained (graceful fallback).
+    """
+    try:
+        client = get_workspace_client()
+        cred = client.postgres.generate_database_credential(endpoint=LAKEBASE_ENDPOINT)
+        if cred and cred.token:
+            print(f"[config] Generated Lakebase credential for endpoint: {LAKEBASE_ENDPOINT}")
+            return cred.token
+        print("[config] WARNING: No token in database credential response")
+        return ""
+    except Exception as e:
+        print(f"[config] ERROR: Failed to generate Lakebase credential: {e}")
+        return ""
+
+
+def get_current_user_email() -> str:
+    """Get the current user's email for Lakebase Autoscaling authentication.
+
+    Lakebase Autoscaling uses the user's email as the Postgres username.
+    """
+    try:
+        client = get_workspace_client()
+        user = client.current_user.me()
+        return user.user_name
+    except Exception as e:
+        print(f"[config] ERROR: Failed to get current user: {e}")
         return ""
 
 
@@ -69,11 +108,18 @@ def _safe_int(value: str, default: int) -> int:
 class Settings:
     """Application settings loaded from environment."""
 
-    # Database
+    # Database (Lakebase Autoscaling)
     PGHOST: str = os.environ.get("PGHOST", "")
     PGPORT: int = _safe_int(os.environ.get("PGPORT", ""), 5432)
-    PGDATABASE: str = os.environ.get("PGDATABASE", "")
-    PGUSER: str = os.environ.get("PGUSER", "")
+    PGDATABASE: str = os.environ.get("PGDATABASE", "databricks_postgres")
+    _pguser: str = os.environ.get("PGUSER", "")
+
+    @property
+    def PGUSER(self) -> str:
+        """Get Postgres user - falls back to authenticated user email for Lakebase Autoscaling."""
+        if self._pguser:
+            return self._pguser
+        return get_current_user_email()
 
     # AI/LLM
     SERVING_ENDPOINT: str = os.environ.get("SERVING_ENDPOINT", "databricks-claude-sonnet-4-5")
