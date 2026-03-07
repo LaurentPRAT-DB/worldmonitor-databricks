@@ -96,6 +96,75 @@ async def health_check():
     }
 
 
+# Debug endpoint to check Lakebase connection
+@app.get("/api/debug/lakebase")
+async def debug_lakebase():
+    """Debug endpoint to check Lakebase Autoscaling connection status."""
+    from server.config import get_lakebase_credential, get_current_user_email, LAKEBASE_ENDPOINT
+
+    result = {
+        "is_databricks_app": IS_DATABRICKS_APP,
+        "pghost": settings.PGHOST,
+        "pgport": settings.PGPORT,
+        "pgdatabase": settings.PGDATABASE,
+        "pguser": settings.PGUSER,
+        "is_lakebase_configured": settings.is_lakebase_configured(),
+        "db_is_demo_mode": db.is_demo_mode,
+        "db_connection_failed": getattr(db, '_connection_failed', False),
+        "lakebase_endpoint": LAKEBASE_ENDPOINT,
+        # Config-based demo mode controls
+        "config_force_demo_mode": settings.FORCE_DEMO_MODE,
+        "config_force_lakebase": settings.FORCE_LAKEBASE,
+        "config_demo_mode": settings.DEMO_MODE,
+    }
+
+    # Try to get user email
+    try:
+        result["current_user_email"] = get_current_user_email()
+    except Exception as e:
+        result["current_user_email_error"] = str(e)
+
+    # Try to generate credential with detailed error info
+    try:
+        token = get_lakebase_credential()
+        result["credential_generated"] = bool(token)
+        result["credential_length"] = len(token) if token else 0
+    except Exception as e:
+        result["credential_error"] = str(e)
+        result["credential_error_type"] = type(e).__name__
+
+    # Also try the raw SDK call to see the actual error
+    try:
+        from server.config import get_workspace_client, LAKEBASE_ENDPOINT
+        client = get_workspace_client()
+        cred = client.postgres.generate_database_credential(endpoint=LAKEBASE_ENDPOINT)
+        result["raw_credential_generated"] = bool(cred and cred.token)
+    except Exception as e:
+        result["raw_credential_error"] = str(e)
+        result["raw_credential_error_type"] = type(e).__name__
+
+    # Try to connect and count records
+    if not db.is_demo_mode:
+        try:
+            count = await db.fetchval("SELECT COUNT(*) FROM earthquakes")
+            result["test_query_success"] = True
+            result["earthquakes_count"] = count
+        except Exception as e:
+            result["test_query_error"] = str(e)
+
+        # Count all tables
+        try:
+            result["earthquakes_count"] = await db.fetchval("SELECT COUNT(*) FROM earthquakes")
+            result["conflict_count"] = await db.fetchval("SELECT COUNT(*) FROM conflict_events")
+            result["vessel_count"] = await db.fetchval("SELECT COUNT(*) FROM vessel_positions")
+            result["fire_count"] = await db.fetchval("SELECT COUNT(*) FROM fire_detections")
+            result["market_quotes_count"] = await db.fetchval("SELECT COUNT(*) FROM market_quotes_history")
+        except Exception as e:
+            result["table_count_error"] = str(e)
+
+    return result
+
+
 # Debug endpoint to check paths
 @app.get("/api/debug/paths")
 async def debug_paths():

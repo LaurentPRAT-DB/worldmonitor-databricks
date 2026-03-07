@@ -202,6 +202,7 @@ async def list_ucdp_events(
     end: Optional[int] = Query(None, description="End timestamp (ms)"),
     country: Optional[str] = Query(None, description="Country filter"),
     limit: int = Query(1000, le=5000),
+    force_refresh: bool = Query(False, description="Force refresh from API, skip Lakebase cache"),
 ):
     """List UCDP georeferenced conflict events.
 
@@ -226,8 +227,8 @@ async def list_ucdp_events(
         end_date = UCDP_MAX_DATE
     hours_back = int((now - start_date).total_seconds() / 3600)
 
-    # Try Lakebase first (fast path)
-    if not db.is_demo_mode:
+    # Try Lakebase first (fast path) - skip if force_refresh requested
+    if not db.is_demo_mode and not force_refresh:
         lakebase_data = await get_conflicts_from_lakebase(hours_back, source="ucdp", country=country)
         if lakebase_data:
             print(f"[ucdp] Serving {len(lakebase_data)} events from Lakebase")
@@ -309,13 +310,19 @@ async def list_ucdp_events(
                         ))
 
                         # Prepare for Lakebase persistence
+                        # Note: where_prec is precision level (1-6), not location name
+                        # Use where_coordinates or location for actual location description
+                        location_name = item.get("where_coordinates") or item.get("location")
+                        if location_name and not isinstance(location_name, str):
+                            location_name = str(location_name)
+
                         events_to_persist.append({
                             "id": event_id,
                             "source": "ucdp",
                             "event_type": event_type,
                             "country": item.get("country", ""),
                             "admin1": item.get("adm_1"),
-                            "location_name": item.get("where_prec"),
+                            "location_name": location_name,
                             "latitude": lat,
                             "longitude": lon,
                             "occurred_at": occurred_at,

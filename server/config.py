@@ -135,7 +135,20 @@ class Settings:
     CLOUDFLARE_API_TOKEN: str = os.environ.get("CLOUDFLARE_API_TOKEN", "")
 
     # Feature flags
-    DEMO_MODE: bool = not bool(os.environ.get("PGHOST"))
+    # FORCE_DEMO_MODE: Set to "true" to force demo mode even if Lakebase is configured
+    # FORCE_LAKEBASE: Set to "true" to force Lakebase connection (fail if unavailable)
+    FORCE_DEMO_MODE: bool = os.environ.get("FORCE_DEMO_MODE", "").lower() in ("true", "1", "yes")
+    FORCE_LAKEBASE: bool = os.environ.get("FORCE_LAKEBASE", "").lower() in ("true", "1", "yes")
+
+    @property
+    def DEMO_MODE(self) -> bool:
+        """Check if running in demo mode (no database persistence)."""
+        if self.FORCE_DEMO_MODE:
+            return True
+        if self.FORCE_LAKEBASE:
+            return False
+        # Default: demo mode if PGHOST is not configured
+        return not bool(self.PGHOST)
 
     @classmethod
     def is_lakebase_configured(cls) -> bool:

@@ -1,14 +1,14 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # Archive Vessel Positions: Lakebase -> Unity Catalog
+# MAGIC # Archive Fire Detections: Lakebase -> Unity Catalog
 # MAGIC
-# MAGIC This notebook archives vessel position data from Lakebase (PostgreSQL) to Unity Catalog (Delta).
+# MAGIC This notebook archives fire detection data from Lakebase (PostgreSQL) to Unity Catalog (Delta).
 # MAGIC
 # MAGIC **Hybrid Architecture:**
-# MAGIC - Lakebase: Recent data (< 24 hours) for fast UI interactions
-# MAGIC - Unity Catalog: Historical data (> 24 hours) for cost-effective storage
+# MAGIC - Lakebase: Recent data (< 7 days) for fast UI interactions
+# MAGIC - Unity Catalog: Historical data for cost-effective analytics storage
 # MAGIC
-# MAGIC **Schedule:** Run daily to keep Lakebase lean and move historical data to Delta.
+# MAGIC **Schedule:** Run daily to archive old fire data.
 
 # COMMAND ----------
 
@@ -23,14 +23,14 @@ from datetime import datetime, timedelta
 # Unity Catalog configuration
 UC_CATALOG = os.environ.get("UC_CATALOG", "serverless_stable_3n0ihb_catalog")
 UC_SCHEMA = os.environ.get("UC_SCHEMA", "worldmonitor_dev")
-UC_TABLE = "vessel_positions_history"
+UC_TABLE = "wildfire_events"
 FULL_TABLE_NAME = f"{UC_CATALOG}.{UC_SCHEMA}.{UC_TABLE}"
 
 # Lakebase retention threshold (hours) - data older than this is archived
-LAKEBASE_RETENTION_HOURS = int(os.environ.get("LAKEBASE_RETENTION_HOURS", "24"))
+LAKEBASE_RETENTION_HOURS = int(os.environ.get("FIRE_RETENTION_HOURS", "168"))  # 7 days
 
 print(f"UC Table: {FULL_TABLE_NAME}")
-print(f"Lakebase retention: {LAKEBASE_RETENTION_HOURS} hours")
+print(f"Lakebase retention: {LAKEBASE_RETENTION_HOURS} hours ({LAKEBASE_RETENTION_HOURS/24:.0f} days)")
 print(f"Archive cutoff: {datetime.utcnow() - timedelta(hours=LAKEBASE_RETENTION_HOURS)}")
 
 # COMMAND ----------
@@ -50,7 +50,6 @@ PGDATABASE = os.environ.get("PGDATABASE", "databricks_postgres")
 
 if not PGHOST:
     print("WARNING: Lakebase not configured (PGHOST not set)")
-    print("This notebook requires Lakebase connection. Set environment variables or run from Databricks Apps context.")
     dbutils.notebook.exit("ERROR: Lakebase not configured")
 
 print(f"Lakebase: {PGHOST}:{PGPORT}/{PGDATABASE}")
@@ -67,29 +66,50 @@ print(f"Authenticated as: {PGUSER}")
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Read Old Positions from Lakebase
+# MAGIC ## Read Old Fire Detections from Lakebase
 
 # COMMAND ----------
 
 # JDBC URL for Lakebase
 jdbc_url = f"jdbc:postgresql://{PGHOST}:{PGPORT}/{PGDATABASE}?sslmode=require"
 
-# Query to get positions older than retention threshold
+# Query to get fires older than retention threshold
+# Map Lakebase columns to Unity Catalog schema
 cutoff_query = f"""
 (SELECT
-    mmsi, name, ship_type, flag_country,
-    latitude, longitude, speed, course, heading,
-    destination, is_synthetic, recorded_at
-FROM vessel_positions
+    id AS fire_id,
+    latitude,
+    longitude,
+    brightness,
+    NULL::DOUBLE PRECISION AS scan,
+    NULL::DOUBLE PRECISION AS track,
+    DATE(acq_datetime) AS acq_date,
+    TO_CHAR(acq_datetime, 'HH24MI') AS acq_time,
+    satellite,
+    'MODIS' AS instrument,
+    CASE
+        WHEN confidence >= 80 THEN 'h'
+        WHEN confidence >= 50 THEN 'n'
+        ELSE 'l'
+    END AS confidence,
+    '6.1NRT' AS version,
+    NULL::DOUBLE PRECISION AS bright_t31,
+    frp,
+    CASE
+        WHEN EXTRACT(HOUR FROM acq_datetime) BETWEEN 6 AND 18 THEN 'D'
+        ELSE 'N'
+    END AS daynight,
+    country,
+    recorded_at AS ingested_at
+FROM fire_detections
 WHERE recorded_at < NOW() - INTERVAL '{LAKEBASE_RETENTION_HOURS} hours'
 ORDER BY recorded_at ASC
-LIMIT 50000) AS positions_to_archive
+LIMIT 50000) AS fires_to_archive
 """
 
-print(f"Reading positions older than {LAKEBASE_RETENTION_HOURS} hours from Lakebase...")
+print(f"Reading fires older than {LAKEBASE_RETENTION_HOURS} hours from Lakebase...")
 
 try:
-    # Read from Lakebase using JDBC
     lakebase_df = (spark.read
         .format("jdbc")
         .option("url", jdbc_url)
@@ -99,10 +119,10 @@ try:
         .option("driver", "org.postgresql.Driver")
         .load())
 
-    position_count = lakebase_df.count()
-    print(f"Found {position_count} positions to archive")
+    record_count = lakebase_df.count()
+    print(f"Found {record_count} fires to archive")
 
-    if position_count > 0:
+    if record_count > 0:
         lakebase_df.show(5, truncate=False)
 except Exception as e:
     print(f"Error reading from Lakebase: {e}")
@@ -111,42 +131,80 @@ except Exception as e:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Append to Unity Catalog Delta Table
+# MAGIC ## Ensure Unity Catalog Table Exists
 
 # COMMAND ----------
 
-if position_count > 0:
-    print(f"Appending {position_count} positions to {FULL_TABLE_NAME}...")
+# Create table if it doesn't exist
+spark.sql(f"""
+CREATE TABLE IF NOT EXISTS {FULL_TABLE_NAME} (
+    fire_id STRING,
+    latitude DOUBLE,
+    longitude DOUBLE,
+    brightness DOUBLE,
+    scan DOUBLE,
+    track DOUBLE,
+    acq_date DATE,
+    acq_time STRING,
+    satellite STRING,
+    instrument STRING,
+    confidence STRING,
+    version STRING,
+    bright_t31 DOUBLE,
+    frp DOUBLE,
+    daynight STRING,
+    country STRING,
+    ingested_at TIMESTAMP
+)
+USING DELTA
+PARTITIONED BY (acq_date)
+CLUSTER BY (country)
+TBLPROPERTIES (delta.enableChangeDataFeed = true)
+COMMENT 'NASA FIRMS active fire detections archived from Lakebase'
+""")
 
-    try:
-        # Append to Delta table
-        (lakebase_df.write
-            .format("delta")
-            .mode("append")
-            .saveAsTable(FULL_TABLE_NAME))
-
-        print(f"Successfully archived {position_count} positions to Unity Catalog")
-    except Exception as e:
-        print(f"Error writing to Unity Catalog: {e}")
-        dbutils.notebook.exit(f"ERROR: {e}")
-else:
-    print("No positions to archive - skipping write")
+print(f"Table {FULL_TABLE_NAME} is ready")
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Delete Archived Positions from Lakebase
+# MAGIC ## Append to Unity Catalog Delta Table
 
 # COMMAND ----------
 
-if position_count > 0:
-    print(f"Deleting archived positions from Lakebase...")
+if record_count > 0:
+    print(f"Appending {record_count} fires to {FULL_TABLE_NAME}...")
 
-    # Use psycopg2 for direct DELETE (JDBC doesn't support DELETE well)
+    try:
+        # Use MERGE to avoid duplicates (based on fire_id)
+        lakebase_df.createOrReplaceTempView("fires_to_archive")
+
+        spark.sql(f"""
+        MERGE INTO {FULL_TABLE_NAME} AS target
+        USING fires_to_archive AS source
+        ON target.fire_id = source.fire_id
+        WHEN NOT MATCHED THEN INSERT *
+        """)
+
+        print(f"Successfully archived {record_count} fires to Unity Catalog")
+    except Exception as e:
+        print(f"Error writing to Unity Catalog: {e}")
+        dbutils.notebook.exit(f"ERROR: {e}")
+else:
+    print("No fires to archive - skipping write")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Delete Archived Fires from Lakebase
+
+# COMMAND ----------
+
+if record_count > 0:
+    print(f"Deleting archived fires from Lakebase...")
+
     import subprocess
     import sys
-
-    # Install psycopg2 if needed
     subprocess.check_call([sys.executable, "-m", "pip", "install", "psycopg2-binary", "-q"])
 
     import psycopg2
@@ -162,28 +220,24 @@ if position_count > 0:
         )
 
         cursor = conn.cursor()
-
-        # Delete positions older than retention threshold
         delete_sql = f"""
-        DELETE FROM vessel_positions
+        DELETE FROM fire_detections
         WHERE recorded_at < NOW() - INTERVAL '{LAKEBASE_RETENTION_HOURS} hours'
         """
 
         cursor.execute(delete_sql)
         deleted_count = cursor.rowcount
         conn.commit()
-
         cursor.close()
         conn.close()
 
-        print(f"Deleted {deleted_count} positions from Lakebase")
+        print(f"Deleted {deleted_count} fires from Lakebase")
 
     except Exception as e:
         print(f"Error deleting from Lakebase: {e}")
-        # Don't exit - archival was successful, just cleanup failed
-        print("WARNING: Archival succeeded but cleanup failed. Positions may be duplicated on next run.")
+        print("WARNING: Archival succeeded but cleanup failed.")
 else:
-    print("No positions archived - skipping delete")
+    print("No fires archived - skipping delete")
 
 # COMMAND ----------
 
@@ -192,17 +246,16 @@ else:
 
 # COMMAND ----------
 
-# Print summary
 summary = {
     "timestamp": datetime.utcnow().isoformat(),
     "lakebase_retention_hours": LAKEBASE_RETENTION_HOURS,
-    "positions_archived": position_count,
+    "records_archived": record_count,
     "uc_table": FULL_TABLE_NAME,
     "status": "SUCCESS"
 }
 
 print("\n" + "="*60)
-print("ARCHIVAL SUMMARY")
+print("ARCHIVAL SUMMARY - FIRES")
 print("="*60)
 for k, v in summary.items():
     print(f"  {k}: {v}")
@@ -210,22 +263,6 @@ print("="*60)
 
 # Verify UC table has data
 uc_count = spark.sql(f"SELECT COUNT(*) as cnt FROM {FULL_TABLE_NAME}").collect()[0]["cnt"]
-print(f"\nUnity Catalog table now has {uc_count:,} total positions")
+print(f"\nUnity Catalog table now has {uc_count:,} total fire records")
 
-# Check Lakebase remaining
-try:
-    remaining_df = (spark.read
-        .format("jdbc")
-        .option("url", jdbc_url)
-        .option("dbtable", "(SELECT COUNT(*) as cnt FROM vessel_positions) AS remaining")
-        .option("user", PGUSER)
-        .option("password", token)
-        .option("driver", "org.postgresql.Driver")
-        .load())
-
-    remaining_count = remaining_df.collect()[0]["cnt"]
-    print(f"Lakebase now has {remaining_count:,} positions (recent data)")
-except Exception as e:
-    print(f"Could not check Lakebase count: {e}")
-
-dbutils.notebook.exit(f"SUCCESS: Archived {position_count} positions")
+dbutils.notebook.exit(f"SUCCESS: Archived {record_count} fires")

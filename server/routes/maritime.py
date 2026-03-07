@@ -382,13 +382,17 @@ async def get_vessel_route_endpoint(
 @router.get("/routes", response_model=VesselRoutesResponse)
 async def get_all_routes(
     hours: int = Query(24, ge=1, le=720, description="Hours of history to retrieve (max 30 days)"),
+    max_points: int = Query(20, ge=5, le=100, description="Max points per vessel route (prevents weird lines from sparse data)"),
 ):
     """Get position history for all tracked vessels.
 
     Returns routes for all vessels within the specified time range,
     grouped by MMSI for efficient map rendering.
+
+    Limited to max_points per vessel to show only recent movements and
+    avoid unrealistic straight lines when position data has large time gaps.
     """
-    routes_data = await get_all_vessel_routes(hours)
+    routes_data = await get_all_vessel_routes(hours, max_points_per_vessel=max_points)
 
     routes = {
         mmsi: [

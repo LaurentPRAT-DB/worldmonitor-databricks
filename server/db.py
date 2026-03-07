@@ -34,11 +34,18 @@ class DatabasePool:
     def __init__(self):
         self._pool: Optional[asyncpg.Pool] = None
         self._demo_mode = False
+        self._connection_failed = False
         self._token_refresh_task: Optional[asyncio.Task] = None
         self._lock = asyncio.Lock()
 
     async def get_pool(self) -> Optional[asyncpg.Pool]:
         """Get or create the connection pool."""
+        # Check for forced demo mode via config
+        if settings.FORCE_DEMO_MODE:
+            print("[db] FORCE_DEMO_MODE is set - running in demo mode")
+            self._demo_mode = True
+            return None
+
         if not settings.is_lakebase_configured():
             self._demo_mode = True
             return None
@@ -54,8 +61,13 @@ class DatabasePool:
             # For Lakebase Autoscaling, use postgres.generate_database_credential()
             token = get_lakebase_credential()
             if not token:
-                print("[db] No Lakebase credential available - falling back to demo mode")
+                error_msg = "[db] No Lakebase credential available"
+                print(error_msg)
+                if settings.FORCE_LAKEBASE:
+                    raise RuntimeError(f"{error_msg} - FORCE_LAKEBASE is set, cannot continue")
+                print("[db] Falling back to demo mode")
                 self._demo_mode = True
+                self._connection_failed = True
                 self._pool = None
                 return
 
@@ -71,10 +83,17 @@ class DatabasePool:
                 max_size=10,
                 command_timeout=30,
             )
+            self._demo_mode = False
+            self._connection_failed = False
             print(f"[db] Connected to Lakebase Autoscaling: {settings.PGHOST}/{settings.PGDATABASE}")
         except Exception as e:
-            print(f"[db] Lakebase connection failed: {e}")
+            error_msg = f"[db] Lakebase connection failed: {e}"
+            print(error_msg)
+            if settings.FORCE_LAKEBASE:
+                raise RuntimeError(f"{error_msg} - FORCE_LAKEBASE is set, cannot continue")
+            print("[db] Falling back to demo mode")
             self._demo_mode = True
+            self._connection_failed = True
             self._pool = None
 
     async def refresh_token(self) -> None:
@@ -114,8 +133,24 @@ class DatabasePool:
 
     @property
     def is_demo_mode(self) -> bool:
-        """Check if running in demo mode (no database)."""
+        """Check if running in demo mode (no database).
+
+        Controlled by environment variables:
+        - FORCE_DEMO_MODE=true: Always run in demo mode
+        - FORCE_LAKEBASE=true: Never run in demo mode (fail if DB unavailable)
+        """
+        # Config-level overrides
+        if settings.FORCE_DEMO_MODE:
+            return True
+        if settings.FORCE_LAKEBASE:
+            return False
+        # Default: based on connection state
         return self._demo_mode
+
+    def set_demo_mode(self, value: bool) -> None:
+        """Manually set demo mode (for testing or admin override)."""
+        self._demo_mode = value
+        print(f"[db] Demo mode manually set to: {value}")
 
     @asynccontextmanager
     async def acquire(self):
@@ -310,6 +345,19 @@ async def init_earthquakes_table() -> None:
         return
     try:
         async with db.acquire() as conn:
+            # Check if table exists with correct schema by checking for a specific column
+            check_sql = """
+                SELECT column_name FROM information_schema.columns
+                WHERE table_name = 'earthquakes' AND column_name = 'tsunami_warning'
+            """
+            result = await conn.fetchrow(check_sql)
+
+            if result is None:
+                # Table is missing columns or doesn't exist at all - drop and recreate
+                print("[db] Earthquakes table schema mismatch - recreating table")
+                await conn.execute("DROP TABLE IF EXISTS earthquakes CASCADE")
+
+            # Create table (will do nothing if already correct schema)
             await conn.execute(EARTHQUAKES_DDL)
         print("[db] Earthquakes table initialized")
     except Exception as e:
@@ -534,7 +582,7 @@ async def get_vessel_route(mmsi: str, hours_back: int = 24) -> list[dict]:
         return []
 
 
-async def get_all_vessel_routes(hours_back: int = 24) -> dict[str, list[dict]]:
+async def get_all_vessel_routes(hours_back: int = 24, max_points_per_vessel: int = 20) -> dict[str, list[dict]]:
     """Get position history for all vessels within the time range, grouped by MMSI.
 
     HYBRID ARCHITECTURE:
@@ -542,6 +590,9 @@ async def get_all_vessel_routes(hours_back: int = 24) -> dict[str, list[dict]]:
     - If hours_back > LAKEBASE_RETENTION_HOURS: Query both sources and merge
       - Lakebase: recent data (last LAKEBASE_RETENTION_HOURS)
       - Unity Catalog: historical data (older than LAKEBASE_RETENTION_HOURS)
+
+    max_points_per_vessel: Limit points per vessel to avoid long straight lines from sparse data.
+                           Uses the most recent points for each vessel.
 
     This provides fast UI response for recent data while supporting long historical queries.
     """
@@ -587,6 +638,8 @@ async def get_all_vessel_routes(hours_back: int = 24) -> dict[str, list[dict]]:
 
                 # If we only need Lakebase data, return now
                 if hours_back <= LAKEBASE_RETENTION_HOURS:
+                    # Only limit points for routes with large gaps
+                    routes = _limit_routes_with_gaps(routes, max_points_per_vessel)
                     return routes
         except Exception as e:
             print(f"[db] Failed to get vessel routes from Lakebase: {e}")
@@ -603,7 +656,66 @@ async def get_all_vessel_routes(hours_back: int = 24) -> dict[str, list[dict]]:
             routes = _merge_vessel_routes(uc_routes, routes)
             print(f"[db] Merged routes: {len(routes)} vessels total")
 
+    # Only limit points if there are large gaps in the data
+    # This preserves full routes when data is continuous, but trims when sparse
+    routes = _limit_routes_with_gaps(routes, max_points_per_vessel)
+
     return routes
+
+
+def _haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Calculate distance between two points in kilometers."""
+    import math
+    R = 6371  # Earth's radius in km
+
+    lat1_rad = math.radians(lat1)
+    lat2_rad = math.radians(lat2)
+    delta_lat = math.radians(lat2 - lat1)
+    delta_lon = math.radians(lon2 - lon1)
+
+    a = math.sin(delta_lat/2)**2 + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(delta_lon/2)**2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+
+    return R * c
+
+
+def _has_large_gaps(points: list[dict], gap_threshold_km: float = 500) -> bool:
+    """Check if route has any gaps larger than threshold between consecutive points."""
+    if len(points) < 2:
+        return False
+
+    for i in range(1, len(points)):
+        prev = points[i-1]
+        curr = points[i]
+        distance = _haversine_distance(
+            prev["latitude"], prev["longitude"],
+            curr["latitude"], curr["longitude"]
+        )
+        if distance > gap_threshold_km:
+            return True
+    return False
+
+
+def _limit_routes_with_gaps(
+    routes: dict[str, list[dict]],
+    max_points: int = 20,
+    gap_threshold_km: float = 500
+) -> dict[str, list[dict]]:
+    """Limit route points only for vessels with large gaps in their data.
+
+    If a route has consecutive points more than gap_threshold_km apart,
+    trim to the last max_points to avoid weird straight lines across the globe.
+    Otherwise, keep all points for continuous routes.
+    """
+    result = {}
+    for mmsi, points in routes.items():
+        if _has_large_gaps(points, gap_threshold_km):
+            # Has gaps - use only last N points
+            result[mmsi] = points[-max_points:] if len(points) > max_points else points
+        else:
+            # No gaps - keep all points
+            result[mmsi] = points
+    return result
 
 
 def _merge_vessel_routes(
@@ -876,6 +988,11 @@ async def save_conflict_event(event: dict) -> bool:
     if db.is_demo_mode:
         return False
     try:
+        # Ensure location_name is string or None
+        location_name = event.get("location_name")
+        if location_name is not None and not isinstance(location_name, str):
+            location_name = str(location_name)
+
         await db.execute(
             """
             INSERT INTO conflict_events
@@ -890,7 +1007,7 @@ async def save_conflict_event(event: dict) -> bool:
             event.get("event_type"),
             event.get("country"),
             event.get("admin1"),
-            event.get("location_name"),
+            location_name,
             event.get("latitude", 0),
             event.get("longitude", 0),
             datetime.fromtimestamp(event.get("occurred_at", 0) / 1000, tz=timezone.utc),
@@ -900,7 +1017,7 @@ async def save_conflict_event(event: dict) -> bool:
         )
         return True
     except Exception as e:
-        print(f"[db] Failed to save conflict event: {e}")
+        print(f"[db] Failed to save conflict event {event.get('id')}: {e}")
         return False
 
 

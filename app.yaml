@@ -59,6 +59,14 @@ env:
   - name: LAKEBASE_RETENTION_HOURS
     value: "24"
 
+  # Demo mode control (choose ONE or leave both false for auto-detection)
+  # FORCE_DEMO_MODE=true: Run in demo mode even if Lakebase is available (no data persistence)
+  # FORCE_LAKEBASE=true: Require Lakebase connection, fail if unavailable (strict mode)
+  - name: FORCE_DEMO_MODE
+    value: "false"
+  - name: FORCE_LAKEBASE
+    value: "false"
+
 resources:
   # Note: Lakebase Autoscaling resources not yet supported in Apps UI
   # Using hardcoded PGHOST above for worldmonitor-cache autoscaling project

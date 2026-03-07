@@ -1,0 +1,133 @@
+resources:
+  jobs:
+    # ==========================================================================
+    # Archival Job: Lakebase -> Unity Catalog (All Data Types)
+    # ==========================================================================
+    worldmonitor_archival:
+      name: "[${bundle.target}] World Monitor - Lakebase Archival"
+      description: "Archive old data from Lakebase to Unity Catalog for long-term analytics storage"
+
+      # Use serverless compute
+      environments:
+        - environment_key: "default"
+          spec:
+            client: "1"
+            dependencies:
+              - psycopg2-binary
+              - databricks-sdk
+
+      # Parallel archival tasks - each notebook handles one data type
+      tasks:
+        - task_key: "archive_earthquakes"
+          description: "Archive earthquakes older than 30 days"
+          notebook_task:
+            notebook_path: ../notebooks/archive_earthquakes.py
+            base_parameters:
+              UC_CATALOG: "${var.catalog}"
+              UC_SCHEMA: "${var.schema}"
+              EARTHQUAKE_RETENTION_HOURS: "720"
+          environment_key: "default"
+
+        - task_key: "archive_conflicts"
+          description: "Archive conflict events older than 30 days"
+          notebook_task:
+            notebook_path: ../notebooks/archive_conflicts.py
+            base_parameters:
+              UC_CATALOG: "${var.catalog}"
+              UC_SCHEMA: "${var.schema}"
+              CONFLICT_RETENTION_HOURS: "720"
+          environment_key: "default"
+
+        - task_key: "archive_fires"
+          description: "Archive fire detections older than 7 days"
+          notebook_task:
+            notebook_path: ../notebooks/archive_fires.py
+            base_parameters:
+              UC_CATALOG: "${var.catalog}"
+              UC_SCHEMA: "${var.schema}"
+              FIRE_RETENTION_HOURS: "168"
+          environment_key: "default"
+
+        - task_key: "archive_market_quotes"
+          description: "Archive market quotes older than 24 hours"
+          notebook_task:
+            notebook_path: ../notebooks/archive_market_quotes.py
+            base_parameters:
+              UC_CATALOG: "${var.catalog}"
+              UC_SCHEMA: "${var.schema}"
+              MARKET_RETENTION_HOURS: "24"
+          environment_key: "default"
+
+        - task_key: "archive_vessels"
+          description: "Archive vessel positions older than 24 hours"
+          notebook_task:
+            notebook_path: ../notebooks/archive_vessel_positions.py
+            base_parameters:
+              UC_CATALOG: "${var.catalog}"
+              UC_SCHEMA: "${var.schema}"
+              LAKEBASE_RETENTION_HOURS: "24"
+          environment_key: "default"
+
+      # Run daily at 2 AM UTC
+      schedule:
+        quartz_cron_expression: "0 0 2 * * ?"
+        timezone_id: "UTC"
+        pause_status: "PAUSED"  # Start paused, enable when ready
+
+      email_notifications:
+        on_failure:
+          - "${workspace.current_user.userName}"
+
+      tags:
+        project: "worldmonitor"
+        environment: "${bundle.target}"
+        type: "archival"
+
+      permissions:
+        - level: CAN_VIEW
+          group_name: "users"
+
+    # ==========================================================================
+    # Market Quotes Archival (Runs more frequently due to 24h retention)
+    # ==========================================================================
+    worldmonitor_archival_market_quotes_hourly:
+      name: "[${bundle.target}] World Monitor - Market Quotes Archival (Hourly)"
+      description: "Archive market quotes hourly to keep Lakebase lean"
+
+      environments:
+        - environment_key: "default"
+          spec:
+            client: "1"
+            dependencies:
+              - psycopg2-binary
+              - databricks-sdk
+
+      tasks:
+        - task_key: "archive_market_quotes"
+          description: "Archive market quotes older than 24 hours"
+          notebook_task:
+            notebook_path: ../notebooks/archive_market_quotes.py
+            base_parameters:
+              UC_CATALOG: "${var.catalog}"
+              UC_SCHEMA: "${var.schema}"
+              MARKET_RETENTION_HOURS: "24"
+          environment_key: "default"
+
+      # Run every hour
+      schedule:
+        quartz_cron_expression: "0 0 * * * ?"
+        timezone_id: "UTC"
+        pause_status: "PAUSED"  # Start paused, enable when ready
+
+      email_notifications:
+        on_failure:
+          - "${workspace.current_user.userName}"
+
+      tags:
+        project: "worldmonitor"
+        environment: "${bundle.target}"
+        type: "archival"
+
+      permissions:
+        - level: CAN_VIEW
+          group_name: "users"

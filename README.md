@@ -216,28 +216,292 @@ worldmonitor-databricks/
 │   │   └── components/    # UI components
 │   └── dist/              # Production build
 │
+├── notebooks/             # Databricks notebooks
+│   ├── archive_earthquakes.py
+│   ├── archive_conflicts.py
+│   ├── archive_fires.py
+│   ├── archive_market_quotes.py
+│   ├── archive_vessel_positions.py
+│   └── sync_vessel_history_to_lakebase.py
+│
 ├── resources/             # DABs resources
-│   └── worldmonitor_app.yml
+│   ├── worldmonitor_app.yml
+│   └── archival_jobs.yml
 │
 └── docs/                  # Documentation
     ├── API.md
     └── DATA_DICTIONARY.md
 ```
 
-## Monitoring
+## Data Architecture
 
-- **Logs**: `https://your-app-url/logz`
-- **Health**: `GET /api/health`
-- **Version**: `GET /api/version`
+### Hybrid Storage Strategy
+
+World Monitor uses a two-tier storage architecture:
+
+| Tier | Technology | Purpose | Retention |
+|------|------------|---------|-----------|
+| **Hot** | Lakebase (PostgreSQL) | Real-time UI interactions, caching | Hours to days |
+| **Cold** | Unity Catalog (Delta Lake) | Long-term analytics, historical queries | Indefinite |
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                          DATA FLOW                                       │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│   External APIs  ──▶  FastAPI Backend  ──▶  Lakebase (Hot)              │
+│   (USGS, ACLED,        (fetch & save)       (PostgreSQL)                │
+│    NASA, etc.)                                   │                       │
+│                                                  │ Archive Jobs          │
+│                                                  │ (daily/hourly)        │
+│                                                  ▼                       │
+│                                           Unity Catalog (Cold)          │
+│                                           (Delta Lake Tables)           │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Lakebase Tables (Hot Storage)
+
+| Table | Retention | Purpose |
+|-------|-----------|---------|
+| `api_cache` | TTL-based | API response caching |
+| `vessel_positions` | 24 hours | Real-time vessel tracking |
+| `earthquakes` | 30 days | USGS earthquake data |
+| `conflict_events` | 30 days | ACLED/UCDP conflict data |
+| `fire_detections` | 7 days | NASA FIRMS wildfire data |
+| `market_quotes_history` | 24 hours | Finnhub/CoinGecko quotes |
+
+### Unity Catalog Tables (Cold Storage)
+
+| Table | Source | Partition Key |
+|-------|--------|---------------|
+| `earthquake_events` | earthquakes | `time` |
+| `conflict_events` | conflict_events | `event_date` |
+| `wildfire_events` | fire_detections | `acq_date` |
+| `vessel_positions_history` | vessel_positions | `timestamp` |
+| `market_quotes` | market_quotes_history | `timestamp` |
+
+**Catalog**: `serverless_stable_3n0ihb_catalog`
+**Schema**: `worldmonitor_dev`
+
+## Databricks Jobs
+
+### Archival Jobs (Lakebase → Unity Catalog)
+
+These jobs move old data from Lakebase to Unity Catalog for cost-effective long-term storage.
+
+| Job Name | Schedule | Data Archived |
+|----------|----------|---------------|
+| `[dev] World Monitor - Lakebase Archival` | Daily at 2 AM UTC | Earthquakes (30d), Conflicts (30d), Fires (7d), Vessels (24h) |
+| `[dev] World Monitor - Market Quotes Archival (Hourly)` | Hourly | Market quotes (24h) |
+
+**Archival Process:**
+1. **Read** old records from Lakebase (older than retention threshold)
+2. **MERGE** into Unity Catalog Delta table (avoids duplicates via `event_id`)
+3. **DELETE** archived records from Lakebase to keep it lean
+
+### Job Management
+
+```bash
+# Deploy all jobs
+databricks bundle deploy -t dev --profile FEVM_SERVERLESS_STABLE
+
+# List jobs
+databricks jobs list --profile FEVM_SERVERLESS_STABLE | grep worldmonitor
+
+# Enable archival job (replace <job_id>)
+databricks jobs update <job_id> --json '{"settings":{"schedule":{"pause_status":"UNPAUSED"}}}' \
+  --profile FEVM_SERVERLESS_STABLE
+
+# Run job manually
+databricks jobs run-now <job_id> --profile FEVM_SERVERLESS_STABLE
+
+# Check job run status
+databricks jobs get-run <run_id> --profile FEVM_SERVERLESS_STABLE
+```
+
+## Administration & Monitoring
+
+### Quick Health Check
+
+```bash
+# Set your profile
+export DATABRICKS_PROFILE=FEVM_SERVERLESS_STABLE
+export APP_URL=https://worldmonitor-dev-7474645572615955.aws.databricksapps.com
+
+# Get auth token
+TOKEN=$(databricks auth token --profile $DATABRICKS_PROFILE)
+
+# Health check
+curl -s -H "Authorization: Bearer $TOKEN" "$APP_URL/api/health" | jq
+# Expected: {"status":"ok","database":"connected","demo_mode":false}
+
+# Debug endpoint (detailed)
+curl -s -H "Authorization: Bearer $TOKEN" "$APP_URL/api/debug/lakebase" | jq
+```
+
+### Key Monitoring Endpoints
+
+| Endpoint | Purpose | Expected Response |
+|----------|---------|-------------------|
+| `GET /api/health` | Overall app health | `{"status":"ok","database":"connected"}` |
+| `GET /api/debug/lakebase` | Lakebase table counts | Row counts for all tables |
+| `GET /api/version` | App version info | Version and build info |
+
+### Watchpoints Checklist
+
+#### 1. Application Health
+
+| Check | Command | Expected |
+|-------|---------|----------|
+| App Status | `databricks apps get worldmonitor-dev --profile $DATABRICKS_PROFILE` | `state: RUNNING` |
+| App Logs | `databricks apps logs worldmonitor-dev --profile $DATABRICKS_PROFILE` | No ERROR lines |
+| Health Endpoint | `curl $APP_URL/api/health` | `"database": "connected"` |
+
+#### 2. Lakebase Data Freshness
+
+| Table | Check | Alert If |
+|-------|-------|----------|
+| `earthquakes` | `SELECT MAX(recorded_at) FROM earthquakes` | > 1 hour old |
+| `vessel_positions` | `SELECT COUNT(*) FROM vessel_positions` | < 100 records |
+| `conflict_events` | `SELECT MAX(recorded_at) FROM conflict_events` | > 24 hours old |
+| `fire_detections` | `SELECT MAX(recorded_at) FROM fire_detections` | > 6 hours old |
+| `market_quotes_history` | `SELECT MAX(recorded_at) FROM market_quotes_history` | > 5 minutes old |
+
+```bash
+# Check via debug endpoint
+curl -s -H "Authorization: Bearer $TOKEN" "$APP_URL/api/debug/lakebase" | jq '.table_counts'
+```
+
+#### 3. Unity Catalog Archival
+
+| Check | SQL Query |
+|-------|-----------|
+| Earthquake archive size | `SELECT COUNT(*) FROM serverless_stable_3n0ihb_catalog.worldmonitor_dev.earthquake_events` |
+| Conflict archive size | `SELECT COUNT(*) FROM serverless_stable_3n0ihb_catalog.worldmonitor_dev.conflict_events` |
+| Latest archival | `SELECT MAX(ingested_at) FROM serverless_stable_3n0ihb_catalog.worldmonitor_dev.earthquake_events` |
+
+#### 4. Job Health
+
+```bash
+# List recent job runs
+databricks jobs list-runs --job-id <archival_job_id> --limit 5 --profile $DATABRICKS_PROFILE
+
+# Check for failed runs
+databricks jobs list-runs --job-id <archival_job_id> --profile $DATABRICKS_PROFILE | grep -i failed
+```
+
+| Job | Expected Frequency | Alert If |
+|-----|-------------------|----------|
+| Lakebase Archival | Daily 2 AM UTC | No SUCCESS in 48h |
+| Market Quotes Archival | Hourly | No SUCCESS in 3h |
+
+#### 5. External API Status
+
+| API | Test Endpoint | Check |
+|-----|---------------|-------|
+| USGS | `/api/seismology/v1/list-earthquakes` | Returns data |
+| NASA FIRMS | `/api/wildfire/v1/list-fires` | Returns data (requires API key) |
+| Finnhub | `/api/market/v1/quotes` | Returns stock quotes |
+| CoinGecko | `/api/market/v1/crypto` | Returns crypto prices |
+| UCDP | `/api/conflict/v1/list-ucdp-events` | Returns conflict events |
+
+```bash
+# Test critical endpoints
+curl -s -H "Authorization: Bearer $TOKEN" "$APP_URL/api/seismology/v1/list-earthquakes?limit=1" | jq '.earthquakes | length'
+curl -s -H "Authorization: Bearer $TOKEN" "$APP_URL/api/market/v1/quotes" | jq '.quotes | length'
+```
+
+### Common Operations
+
+#### Redeploy Application
+
+```bash
+cd frontend && npm run build && cd ..
+databricks bundle deploy -t dev --profile FEVM_SERVERLESS_STABLE
+databricks bundle run worldmonitor_app -t dev --profile FEVM_SERVERLESS_STABLE
+```
+
+#### Force Data Refresh
+
+```bash
+# Bypass cache for specific endpoints
+curl -H "Authorization: Bearer $TOKEN" "$APP_URL/api/seismology/v1/list-earthquakes?force_refresh=true"
+curl -H "Authorization: Bearer $TOKEN" "$APP_URL/api/conflict/v1/list-ucdp-events?force_refresh=true"
+```
+
+#### Run Archival Job Manually
+
+```bash
+# Get job ID
+JOB_ID=$(databricks jobs list --profile $DATABRICKS_PROFILE --output json | jq -r '.jobs[] | select(.settings.name | contains("Lakebase Archival")) | .job_id')
+
+# Trigger run
+databricks jobs run-now $JOB_ID --profile $DATABRICKS_PROFILE
+```
+
+#### Check Lakebase Connection
+
+```bash
+# From app logs
+databricks apps logs worldmonitor-dev --profile $DATABRICKS_PROFILE | grep -i "lakebase\|postgres\|database"
+```
+
+### Alerting Recommendations
+
+| Metric | Warning | Critical |
+|--------|---------|----------|
+| App health endpoint | Response time > 5s | Returns error or demo_mode: true |
+| Earthquake data age | > 2 hours | > 6 hours |
+| Market quotes age | > 10 minutes | > 30 minutes |
+| Daily archival job | Missed 1 run | Missed 2 consecutive runs |
+| Lakebase row count | < 50% of expected | Table empty |
+
+### Log Analysis
+
+```bash
+# View recent logs
+databricks apps logs worldmonitor-dev --profile $DATABRICKS_PROFILE
+
+# Filter for errors
+databricks apps logs worldmonitor-dev --profile $DATABRICKS_PROFILE | grep -i "error\|exception\|failed"
+
+# Filter for Lakebase issues
+databricks apps logs worldmonitor-dev --profile $DATABRICKS_PROFILE | grep -i "lakebase\|postgres\|connection"
+```
 
 ## Troubleshooting
 
-| Issue | Solution |
-|-------|----------|
-| Frontend not loading | Run `npm run build`, redeploy |
-| Lakebase connection failed | Check resource binding in app.yaml |
-| UCDP returns empty | Date range must be 2019-2023 (historical data) |
-| Fire markers missing | Verify NASA FIRMS API key |
+| Issue | Symptoms | Solution |
+|-------|----------|----------|
+| Frontend not loading | Blank page, 404 | Run `npm run build`, redeploy |
+| Lakebase connection failed | `demo_mode: true` in health | Check SDK version (≥0.81.0), verify IAM roles |
+| UCDP returns empty | No conflict events | Date range must be recent; check `UCDP_ACCESS_TOKEN` |
+| Fire markers missing | No fires on map | Verify `NASA_FIRMS_API_KEY` in app.yaml |
+| Archival job fails | Job status FAILED | Check notebook logs, verify Lakebase credentials |
+| Stale data | Old timestamps | Run `force_refresh=true` or check external API status |
+| High latency | Slow API responses | Check Lakebase connection pool, review query performance |
+| Market quotes empty | No stock/crypto data | Verify `FINNHUB_API_KEY`, check rate limits |
+
+### Lakebase Authentication Issues
+
+If the app shows `demo_mode: true`:
+
+1. **Check SDK version**: Must be `databricks-sdk>=0.81.0`
+2. **Verify IAM role exists** for service principal:
+   ```bash
+   databricks lakebase list-roles --project worldmonitor-cache --profile $DATABRICKS_PROFILE
+   ```
+3. **Test credential generation**:
+   ```python
+   from databricks.sdk import WorkspaceClient
+   w = WorkspaceClient()
+   cred = w.postgres.generate_database_credential(
+       endpoint="projects/worldmonitor-cache/branches/production/endpoints/primary"
+   )
+   print(cred.token[:20] + "...")  # Should print partial token
+   ```
 
 ## License
 
