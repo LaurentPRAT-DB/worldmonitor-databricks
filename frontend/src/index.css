@@ -42,6 +42,24 @@ body {
   height: 100%;
 }
 
+/* Ensure marker elements show pointer cursor above the map's grab cursor */
+.maplibregl-marker {
+  cursor: pointer !important;
+  z-index: 1;
+}
+
+.maplibregl-marker:hover {
+  z-index: 2;
+}
+
+.maplibregl-canvas-container.maplibregl-interactive {
+  cursor: grab;
+}
+
+.maplibregl-canvas-container.maplibregl-interactive:active {
+  cursor: grabbing;
+}
+
 /* Panel animations */
 .panel {
   @apply bg-wm-panel border border-wm-border rounded-lg;

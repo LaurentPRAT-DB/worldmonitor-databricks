@@ -638,14 +638,17 @@ function createMarkerElement(type: string, intensity: number): HTMLDivElement {
   }
 
   // Use fixed positioning styles to prevent layout issues
+  // Transparent border extends the hover hit area beyond the visible dot
+  const hitPad = Math.max(4, 10 - Math.floor(size / 2))
   el.style.cssText = `
     width: ${size}px;
     height: ${size}px;
     border-radius: 50%;
     background-color: ${colors[type] || 'rgba(59, 130, 246, 0.8)'};
-    border: 1px solid rgba(255, 255, 255, 0.3);
+    border: ${hitPad}px solid transparent;
+    background-clip: padding-box;
     cursor: pointer;
-    box-sizing: border-box;
+    box-sizing: content-box;
     pointer-events: auto;
     transition: box-shadow 0.15s ease-in-out;
   `
