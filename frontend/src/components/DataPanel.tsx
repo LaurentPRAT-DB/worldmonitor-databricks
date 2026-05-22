@@ -3,6 +3,7 @@ import {
   TrendingUp,
   Shield,
   Wifi,
+  Radiation,
   AlertCircle,
   CheckCircle,
   XCircle,
@@ -10,7 +11,7 @@ import {
 } from 'lucide-react'
 import { useAppStore } from '../stores/appStore'
 
-type DataType = 'markets' | 'cyber' | 'infrastructure'
+type DataType = 'markets' | 'cyber' | 'infrastructure' | 'nuclear'
 
 interface DataPanelProps {
   type: DataType
@@ -33,6 +34,11 @@ export default function DataPanel({ type }: DataPanelProps) {
       icon: Wifi,
       color: 'text-indigo-400',
     },
+    nuclear: {
+      title: 'NUCLEAR FACILITIES',
+      icon: Radiation,
+      color: 'text-lime-400',
+    },
   }
 
   const { title, icon: Icon, color } = config[type]
@@ -48,6 +54,7 @@ export default function DataPanel({ type }: DataPanelProps) {
         {type === 'markets' && <MarketsPanel />}
         {type === 'cyber' && <CyberPanel />}
         {type === 'infrastructure' && <InfrastructurePanel />}
+        {type === 'nuclear' && <NuclearPanel />}
       </div>
     </div>
   )
@@ -232,6 +239,95 @@ function InfrastructurePanel() {
       ))}
     </div>
   )
+}
+
+function NuclearPanel() {
+  const { nuclearFacilities } = useAppStore()
+  const [filter, setFilter] = useState<string>('all')
+
+  const filtered = nuclearFacilities.filter((f) =>
+    filter === 'all' ? true : f.status === filter
+  )
+
+  const statusCounts = nuclearFacilities.reduce((acc, f) => {
+    acc[f.status] = (acc[f.status] || 0) + 1
+    return acc
+  }, {} as Record<string, number>)
+
+  return (
+    <div>
+      {/* Stats */}
+      <div className="grid grid-cols-3 gap-2 p-3 border-b border-wm-border">
+        <div className="bg-wm-bg rounded p-2 text-center">
+          <div className="text-lg font-bold text-green-400">{statusCounts.operational || 0}</div>
+          <div className="text-xs text-gray-400">Active</div>
+        </div>
+        <div className="bg-wm-bg rounded p-2 text-center">
+          <div className="text-lg font-bold text-red-400">{statusCounts.conflict_zone || 0}</div>
+          <div className="text-xs text-gray-400">Conflict</div>
+        </div>
+        <div className="bg-wm-bg rounded p-2 text-center">
+          <div className="text-lg font-bold text-gray-400">{statusCounts.decommissioned || 0}</div>
+          <div className="text-xs text-gray-400">Decom.</div>
+        </div>
+      </div>
+
+      {/* Filter */}
+      <div className="flex gap-2 p-3 border-b border-wm-border flex-wrap">
+        {['all', 'operational', 'conflict_zone', 'decommissioned', 'shutdown', 'under_construction'].map((f) => (
+          <button
+            key={f}
+            onClick={() => setFilter(f)}
+            className={`px-2 py-1 text-xs rounded ${
+              filter === f
+                ? 'bg-lime-500/20 text-lime-400'
+                : 'bg-wm-bg text-gray-400 hover:text-white'
+            }`}
+          >
+            {f === 'all' ? 'All' : f.replace('_', ' ')}
+          </button>
+        ))}
+      </div>
+
+      {/* Facility list */}
+      <div className="divide-y divide-wm-border">
+        {filtered.map((facility) => (
+          <div key={facility.id} className="p-3 hover:bg-wm-bg/50">
+            <div className="flex items-center justify-between">
+              <span className="font-medium text-sm">{facility.name}</span>
+              <span className={`text-xs px-2 py-0.5 rounded ${getNuclearStatusStyle(facility.status)}`}>
+                {facility.status.replace('_', ' ')}
+              </span>
+            </div>
+            <div className="flex items-center justify-between mt-1 text-xs text-gray-400">
+              <span>{facility.country}</span>
+              <span>{facility.facility_type.replace('_', ' ')}</span>
+            </div>
+            {facility.capacity_mw && (
+              <div className="text-xs text-gray-500 mt-1">{facility.capacity_mw} MW</div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function getNuclearStatusStyle(status: string): string {
+  switch (status) {
+    case 'operational':
+      return 'bg-green-500/20 text-green-400'
+    case 'conflict_zone':
+      return 'bg-red-500/20 text-red-400'
+    case 'under_construction':
+      return 'bg-blue-500/20 text-blue-400'
+    case 'shutdown':
+      return 'bg-yellow-500/20 text-yellow-400'
+    case 'decommissioned':
+      return 'bg-gray-500/20 text-gray-400'
+    default:
+      return 'bg-gray-500/20 text-gray-400'
+  }
 }
 
 function getIOCTypeStyle(type: string): string {

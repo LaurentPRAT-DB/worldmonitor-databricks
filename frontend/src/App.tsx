@@ -46,6 +46,7 @@ function App() {
               <Route path="/fires" element={<EventsPanel type="fires" />} />
               <Route path="/maritime" element={<EventsPanel type="maritime" />} />
               <Route path="/military" element={<EventsPanel type="military" />} />
+              <Route path="/nuclear" element={<DataPanel type="nuclear" />} />
               <Route path="/markets" element={<DataPanel type="markets" />} />
               <Route path="/cyber" element={<DataPanel type="cyber" />} />
               <Route path="/infrastructure" element={<DataPanel type="infrastructure" />} />
@@ -72,7 +73,18 @@ function App() {
 }
 
 function DataStrip() {
-  const { stats, marketQuotes } = useAppStore()
+  const { stats, marketQuotes, spaceWeather, gpsJammingZones } = useAppStore()
+
+  const kpColor = spaceWeather
+    ? spaceWeather.kp_index >= 7 ? 'text-red-400'
+      : spaceWeather.kp_index >= 5 ? 'text-orange-400'
+      : spaceWeather.kp_index >= 4 ? 'text-yellow-400'
+      : 'text-green-400'
+    : 'text-gray-500'
+
+  const kpLabel = spaceWeather
+    ? spaceWeather.kp_category.toUpperCase().replace('_', ' ')
+    : '...'
 
   return (
     <>
@@ -87,6 +99,20 @@ function DataStrip() {
       <div className="flex items-center gap-2">
         <span className="text-gray-400 text-xs">FIRES</span>
         <span className="text-lg font-bold text-orange-500">{stats.fires || 0}</span>
+      </div>
+      <div className="w-px h-8 bg-wm-border mx-2" />
+      {gpsJammingZones.length > 0 && (
+        <div className="flex items-center gap-2">
+          <span className="text-gray-400 text-xs">GPS JAM</span>
+          <span className="text-lg font-bold text-orange-400">{gpsJammingZones.length}</span>
+        </div>
+      )}
+      <div className="flex items-center gap-2" title={spaceWeather ? `Solar wind: ${spaceWeather.solar_wind_speed || '?'} km/s | Storm level: ${spaceWeather.geomagnetic_storm_level}` : ''}>
+        <span className="text-gray-400 text-xs">SOLAR</span>
+        <span className={`text-sm font-bold ${kpColor}`}>
+          Kp {spaceWeather?.kp_index?.toFixed(1) || '?'}
+        </span>
+        <span className={`text-xs ${kpColor}`}>{kpLabel}</span>
       </div>
       <div className="w-px h-8 bg-wm-border mx-2" />
       {marketQuotes.slice(0, 4).map((quote) => (

@@ -34,6 +34,8 @@ class MilitaryFlight(BaseModel):
     classification: str = "unknown"  # military, government, unknown
     aircraft_type: Optional[str] = None
     mission_type: Optional[str] = None
+    nac_p: int = 11  # Navigation Accuracy Category for Position (0-11)
+    is_gps_jammed: bool = False  # True when nac_p <= 4
     timestamp: int
 
 
@@ -357,6 +359,16 @@ def generate_synthetic_flights() -> list[dict]:
             # Timestamp with some variation
             ts = now - timedelta(minutes=random.randint(0, 30))
 
+            # NAC_p: most aircraft report 8-11 (normal GPS accuracy)
+            # Aircraft near Iranian airspace / Strait of Hormuz have higher chance of jamming
+            is_conflict_zone = (25.0 <= lat <= 28.0 and 54.0 <= lon <= 58.0)
+            if is_conflict_zone and random.random() < 0.35:
+                nac_p = random.randint(0, 4)  # GPS jammed
+            elif random.random() < 0.05:
+                nac_p = random.randint(2, 4)  # Occasional jamming elsewhere
+            else:
+                nac_p = random.randint(8, 11)  # Normal accuracy
+
             flights.append({
                 "icao24": icao24,
                 "callsign": callsign,
@@ -373,6 +385,8 @@ def generate_synthetic_flights() -> list[dict]:
                 "classification": template["classification"],
                 "aircraft_type": template["aircraft_type"],
                 "mission_type": template["mission_type"],
+                "nac_p": nac_p,
+                "is_gps_jammed": nac_p <= 4,
                 "timestamp": int(ts.timestamp() * 1000),
             })
 
@@ -539,3 +553,61 @@ async def get_theater_posture(theater: str):
 
     await cache_set(cache_key, posture.model_dump(), 300)  # 5 minute cache
     return posture
+
+
+class GpsJammingZone(BaseModel):
+    icao24: str
+    callsign: Optional[str] = None
+    position: Position
+    nac_p: int
+    aircraft_type: Optional[str] = None
+    origin_country: str
+    estimated_radius_km: float
+
+
+class ListGpsJammingResponse(BaseModel):
+    zones: list[GpsJammingZone]
+    total: int
+    updated_at: int
+
+
+@router.get("/list-gps-jamming-zones", response_model=ListGpsJammingResponse)
+async def list_gps_jamming_zones():
+    """
+    List aircraft currently experiencing GPS jamming (NAC_p <= 4).
+
+    NAC_p (Navigation Accuracy Category for Position) below 4 indicates
+    degraded GPS accuracy, commonly caused by intentional jamming.
+    """
+    cache_key = "gps-jamming-zones"
+
+    cached = await cache_get(cache_key)
+    if cached:
+        return ListGpsJammingResponse(**cached)
+
+    all_flights = generate_synthetic_flights()
+    jammed = [f for f in all_flights if f["nac_p"] <= 4]
+
+    zones = []
+    for f in jammed:
+        # Estimated jamming radius based on NAC_p degradation
+        radius = {0: 100, 1: 75, 2: 50, 3: 30, 4: 15}.get(f["nac_p"], 50)
+        zones.append(GpsJammingZone(
+            icao24=f["icao24"],
+            callsign=f["callsign"],
+            position=Position(**f["position"]),
+            nac_p=f["nac_p"],
+            aircraft_type=f["aircraft_type"],
+            origin_country=f["origin_country"],
+            estimated_radius_km=radius,
+        ))
+
+    now = int(datetime.utcnow().timestamp() * 1000)
+    result = {
+        "zones": [z.model_dump() for z in zones],
+        "total": len(zones),
+        "updated_at": now,
+    }
+
+    await cache_set(cache_key, result, 60)
+    return ListGpsJammingResponse(**result)

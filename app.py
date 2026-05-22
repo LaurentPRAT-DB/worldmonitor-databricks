@@ -29,6 +29,8 @@ from server.routes import (
     intelligence,
     infrastructure,
     cyber,
+    nuclear,
+    space_weather,
 )
 
 
@@ -252,6 +254,10 @@ app.include_router(cyber.router, prefix="/api", tags=["Cyber-Compat"])
 app.include_router(intelligence.router, prefix="/api/intelligence/v1", tags=["Intelligence"])
 app.include_router(infrastructure.router, prefix="/api/infrastructure/v1", tags=["Infrastructure"])
 app.include_router(cyber.router, prefix="/api/cyber/v1", tags=["Cyber"])
+app.include_router(nuclear.router, prefix="/api/nuclear/v1", tags=["Nuclear"])
+app.include_router(nuclear.router, prefix="/api", tags=["Nuclear-Compat"])
+app.include_router(space_weather.router, prefix="/api/space-weather/v1", tags=["SpaceWeather"])
+app.include_router(space_weather.router, prefix="/api", tags=["SpaceWeather-Compat"])
 
 
 # Error handlers

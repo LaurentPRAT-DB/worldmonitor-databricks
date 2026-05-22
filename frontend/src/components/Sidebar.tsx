@@ -11,12 +11,13 @@ import {
   Wifi,
   Brain,
   Settings,
-  Menu
+  Menu,
+  Radiation
 } from 'lucide-react'
 import { useState } from 'react'
 import { useAppStore } from '../stores/appStore'
 
-type LayerType = 'conflicts' | 'earthquakes' | 'fires' | 'maritime' | 'military' | 'climate'
+type LayerType = 'conflicts' | 'earthquakes' | 'fires' | 'maritime' | 'military' | 'climate' | 'nuclear'
 
 const navItems = [
   { path: '/', icon: Globe, label: 'Overview', color: 'text-blue-400', layer: 'overview' as string },
@@ -25,6 +26,7 @@ const navItems = [
   { path: '/fires', icon: Flame, label: 'Wildfires', color: 'text-orange-400', layer: 'fires' as LayerType },
   { path: '/maritime', icon: Ship, label: 'Maritime', color: 'text-cyan-400', layer: 'maritime' as LayerType },
   { path: '/military', icon: Plane, label: 'Military', color: 'text-purple-400', layer: 'military' as LayerType },
+  { path: '/nuclear', icon: Radiation, label: 'Nuclear', color: 'text-lime-400', layer: 'nuclear' as LayerType },
   { path: '/markets', icon: TrendingUp, label: 'Markets', color: 'text-green-400', layer: undefined },
   { path: '/cyber', icon: Shield, label: 'Cyber', color: 'text-pink-400', layer: undefined },
   { path: '/infrastructure', icon: Wifi, label: 'Infra', color: 'text-indigo-400', layer: undefined },

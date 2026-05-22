@@ -14,6 +14,7 @@ const layerOptions = [
   { id: 'fires', label: 'Wildfires', color: 'bg-orange-500' },
   { id: 'maritime', label: 'Maritime', color: 'bg-cyan-500' },
   { id: 'military', label: 'Military', color: 'bg-purple-500' },
+  { id: 'nuclear', label: 'Nuclear', color: 'bg-lime-500' },
   { id: 'climate', label: 'Climate', color: 'bg-blue-500' },
 ] as const
 

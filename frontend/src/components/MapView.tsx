@@ -46,6 +46,8 @@ export default function MapView() {
     vesselRoutes,
     militaryFlights,
     militaryBases,
+    nuclearFacilities,
+    gpsJammingZones,
     selectedLayers,
     showVesselRoutes,
     selectedVessel,
@@ -250,8 +252,63 @@ export default function MapView() {
           markersRef.current.push(marker)
         }
       })
+
+      // Add GPS jamming zone markers (pulsing orange circles)
+      gpsJammingZones.forEach((zone) => {
+        if (isValidCoordinate(zone.latitude, zone.longitude)) {
+          const el = createMarkerElement('gps_jam', zone.estimated_radius_km)
+          const popup = new maplibregl.Popup({ offset: 25, closeButton: false })
+            .setHTML(`
+              <div class="text-xs">
+                <div class="font-bold text-orange-400">GPS JAMMING DETECTED</div>
+                <div class="text-gray-300">${zone.callsign || zone.icao24}</div>
+                <div class="text-gray-400">${zone.aircraft_type || 'Unknown aircraft'}</div>
+                <div class="text-gray-400">${zone.origin_country}</div>
+                <div class="text-orange-300">NAC_p: ${zone.nac_p} (radius ~${zone.estimated_radius_km} km)</div>
+              </div>
+            `)
+
+          const marker = new maplibregl.Marker({ element: el, anchor: 'center' })
+            .setLngLat([zone.longitude, zone.latitude])
+            .setPopup(popup)
+            .addTo(map.current!)
+
+          markersRef.current.push(marker)
+        }
+      })
     }
-  }, [conflicts, earthquakes, wildfires, vessels, militaryFlights, militaryBases, selectedLayers])
+
+    // Add nuclear facility markers
+    if (selectedLayers.includes('nuclear')) {
+      nuclearFacilities.forEach((facility) => {
+        if (isValidCoordinate(facility.latitude, facility.longitude)) {
+          const el = createMarkerElement('nuclear', 1)
+          const statusColor = facility.status === 'conflict_zone' ? 'text-red-400'
+            : facility.status === 'operational' ? 'text-green-400'
+            : facility.status === 'under_construction' ? 'text-blue-400'
+            : 'text-gray-400'
+          const popup = new maplibregl.Popup({ offset: 25, closeButton: false })
+            .setHTML(`
+              <div class="text-xs">
+                <div class="font-bold text-lime-400">${facility.name}</div>
+                <div class="text-gray-300">${facility.country}</div>
+                <div class="text-gray-400">${facility.facility_type.replace('_', ' ').toUpperCase()}</div>
+                ${facility.capacity_mw ? `<div class="text-gray-400">${facility.capacity_mw} MW</div>` : ''}
+                ${facility.operator ? `<div class="text-gray-400">${facility.operator}</div>` : ''}
+                <div class="text-xs mt-1 ${statusColor}">${facility.status.replace('_', ' ').toUpperCase()}</div>
+              </div>
+            `)
+
+          const marker = new maplibregl.Marker({ element: el, anchor: 'center' })
+            .setLngLat([facility.longitude, facility.latitude])
+            .setPopup(popup)
+            .addTo(map.current!)
+
+          markersRef.current.push(marker)
+        }
+      })
+    }
+  }, [conflicts, earthquakes, wildfires, vessels, militaryFlights, militaryBases, nuclearFacilities, gpsJammingZones, selectedLayers])
 
   // Fetch routes immediately when showVesselRoutes becomes true
   useEffect(() => {
@@ -626,6 +683,10 @@ function createMarkerElement(type: string, intensity: number): HTMLDivElement {
     ? 10
     : type === 'aircraft'
     ? 7
+    : type === 'nuclear'
+    ? 12
+    : type === 'gps_jam'
+    ? 18
     : 8
 
   const colors: Record<string, string> = {
@@ -634,31 +695,68 @@ function createMarkerElement(type: string, intensity: number): HTMLDivElement {
     fire: 'rgba(249, 115, 22, 0.8)',
     vessel: 'rgba(6, 182, 212, 0.8)',
     aircraft: 'rgba(147, 51, 234, 0.8)',
-    base: 'rgba(245, 158, 11, 0.9)',  // Amber for bases
+    base: 'rgba(245, 158, 11, 0.9)',
+    nuclear: 'rgba(132, 204, 22, 0.9)',  // Lime for nuclear
+    gps_jam: 'rgba(251, 146, 60, 0.5)',  // Semi-transparent orange for jamming zone
   }
 
   // Use fixed positioning styles to prevent layout issues
   // Transparent border extends the hover hit area beyond the visible dot
   const hitPad = Math.max(4, 10 - Math.floor(size / 2))
-  el.style.cssText = `
-    width: ${size}px;
-    height: ${size}px;
-    border-radius: 50%;
-    background-color: ${colors[type] || 'rgba(59, 130, 246, 0.8)'};
-    border: ${hitPad}px solid transparent;
-    background-clip: padding-box;
-    cursor: pointer;
-    box-sizing: content-box;
-    pointer-events: auto;
-    transition: box-shadow 0.15s ease-in-out;
-  `
+
+  if (type === 'gps_jam') {
+    // GPS jamming zones get a pulsing animation
+    el.style.cssText = `
+      width: ${size}px;
+      height: ${size}px;
+      border-radius: 50%;
+      background-color: ${colors[type]};
+      border: 2px solid rgba(251, 146, 60, 0.8);
+      cursor: pointer;
+      box-sizing: content-box;
+      pointer-events: auto;
+      animation: pulse-jam 2s ease-in-out infinite;
+    `
+  } else if (type === 'nuclear') {
+    // Nuclear facilities get a radiation-style glow
+    el.style.cssText = `
+      width: ${size}px;
+      height: ${size}px;
+      border-radius: 50%;
+      background-color: ${colors[type]};
+      border: ${hitPad}px solid transparent;
+      background-clip: padding-box;
+      cursor: pointer;
+      box-sizing: content-box;
+      pointer-events: auto;
+      box-shadow: 0 0 6px 3px rgba(132, 204, 22, 0.4);
+      transition: box-shadow 0.15s ease-in-out;
+    `
+  } else {
+    el.style.cssText = `
+      width: ${size}px;
+      height: ${size}px;
+      border-radius: 50%;
+      background-color: ${colors[type] || 'rgba(59, 130, 246, 0.8)'};
+      border: ${hitPad}px solid transparent;
+      background-clip: padding-box;
+      cursor: pointer;
+      box-sizing: content-box;
+      pointer-events: auto;
+      transition: box-shadow 0.15s ease-in-out;
+    `
+  }
 
   // Use box-shadow for hover instead of transform to prevent displacement
   el.addEventListener('mouseenter', () => {
     el.style.boxShadow = `0 0 ${size}px ${size/2}px ${colors[type] || 'rgba(59, 130, 246, 0.6)'}`
   })
   el.addEventListener('mouseleave', () => {
-    el.style.boxShadow = 'none'
+    if (type === 'nuclear') {
+      el.style.boxShadow = '0 0 6px 3px rgba(132, 204, 22, 0.4)'
+    } else if (type !== 'gps_jam') {
+      el.style.boxShadow = 'none'
+    }
   })
 
   return el

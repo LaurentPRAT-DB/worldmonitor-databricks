@@ -93,6 +93,20 @@ body {
   animation: pulse-live 2s ease-in-out infinite;
 }
 
+/* GPS jamming zone pulse */
+@keyframes pulse-jam {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 0.5;
+    box-shadow: 0 0 8px 4px rgba(251, 146, 60, 0.3);
+  }
+  50% {
+    transform: scale(1.4);
+    opacity: 0.3;
+    box-shadow: 0 0 16px 8px rgba(251, 146, 60, 0.15);
+  }
+}
+
 /* Status colors */
 .status-operational { @apply text-wm-success; }
 .status-degraded { @apply text-wm-warning; }

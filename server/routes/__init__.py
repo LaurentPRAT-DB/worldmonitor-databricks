@@ -13,6 +13,8 @@ from . import (
     intelligence,
     infrastructure,
     cyber,
+    nuclear,
+    space_weather,
 )
 
 __all__ = [
@@ -28,4 +30,6 @@ __all__ = [
     "intelligence",
     "infrastructure",
     "cyber",
+    "nuclear",
+    "space_weather",
 ]

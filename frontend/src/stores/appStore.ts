@@ -93,6 +93,40 @@ interface RiskScore {
   climate_risk: number
 }
 
+interface NuclearFacility {
+  id: string
+  name: string
+  country: string
+  latitude: number
+  longitude: number
+  facility_type: string
+  status: string
+  capacity_mw: number | null
+  operator: string | null
+  year_commissioned: number | null
+}
+
+interface GpsJammingZone {
+  icao24: string
+  callsign: string | null
+  latitude: number
+  longitude: number
+  nac_p: number
+  aircraft_type: string | null
+  origin_country: string
+  estimated_radius_km: number
+}
+
+interface SpaceWeather {
+  kp_index: number
+  kp_category: string
+  solar_wind_speed: number | null
+  solar_wind_density: number | null
+  latest_flare: { event_class: string | null; peak_time: string | null } | null
+  geomagnetic_storm_level: string
+  updated_at: number
+}
+
 interface MilitaryFlight {
   icao24: string
   callsign: string | null
@@ -128,7 +162,7 @@ interface Stats {
   cyberThreats: number
 }
 
-type LayerType = 'conflicts' | 'earthquakes' | 'fires' | 'maritime' | 'military' | 'climate'
+type LayerType = 'conflicts' | 'earthquakes' | 'fires' | 'maritime' | 'military' | 'climate' | 'nuclear'
 
 interface AppState {
   // Data
@@ -143,6 +177,9 @@ interface AppState {
   riskScores: RiskScore[]
   militaryFlights: MilitaryFlight[]
   militaryBases: MilitaryBase[]
+  nuclearFacilities: NuclearFacility[]
+  gpsJammingZones: GpsJammingZone[]
+  spaceWeather: SpaceWeather | null
   stats: Stats
 
   // UI State
@@ -165,6 +202,8 @@ interface AppState {
   fetchInfrastructure: () => Promise<void>
   fetchRiskScores: () => Promise<void>
   fetchMilitary: () => Promise<void>
+  fetchNuclear: () => Promise<void>
+  fetchSpaceWeather: () => Promise<void>
   toggleLayer: (layer: LayerType) => void
   setActiveLayer: (layer: LayerType | null) => void
   setTimeRange: (days: number) => void
@@ -188,6 +227,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   riskScores: [],
   militaryFlights: [],
   militaryBases: [],
+  nuclearFacilities: [],
+  gpsJammingZones: [],
+  spaceWeather: null,
   stats: {
     conflicts: 0,
     earthquakes: 0,
@@ -216,6 +258,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       get().fetchInfrastructure(),
       get().fetchRiskScores(),
       get().fetchMilitary(),
+      get().fetchNuclear(),
+      get().fetchSpaceWeather(),
     ])
     set({ isLoading: false })
   },
@@ -441,8 +485,21 @@ export const useAppStore = create<AppState>((set, get) => ({
           mission_type: f.mission_type,
           timestamp: f.timestamp,
         }))
+        // Extract GPS jamming zones from flights with nac_p <= 4
+        const jammedFlights = (data.flights || []).filter((f: any) => f.is_gps_jammed)
+        const gpsZones = jammedFlights.map((f: any) => ({
+          icao24: f.icao24,
+          callsign: f.callsign,
+          latitude: f.position?.latitude || f.latitude,
+          longitude: f.position?.longitude || f.longitude,
+          nac_p: f.nac_p,
+          aircraft_type: f.aircraft_type,
+          origin_country: f.origin_country,
+          estimated_radius_km: {0: 100, 1: 75, 2: 50, 3: 30, 4: 15}[f.nac_p as number] || 50,
+        }))
         set({
           militaryFlights: flights,
+          gpsJammingZones: gpsZones,
           stats: { ...get().stats, aircraft: data.total || flights.length },
         })
       }
@@ -464,6 +521,44 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
     } catch (e) {
       console.error('Failed to fetch military data:', e)
+    }
+  },
+
+  // Fetch nuclear facilities
+  fetchNuclear: async () => {
+    try {
+      const res = await fetch(`${API_BASE}/nuclear/v1/list-nuclear-facilities`)
+      if (res.ok) {
+        const data = await res.json()
+        const facilities = (data.facilities || []).map((f: any) => ({
+          id: f.id,
+          name: f.name,
+          country: f.country,
+          latitude: f.position?.latitude || f.latitude,
+          longitude: f.position?.longitude || f.longitude,
+          facility_type: f.facility_type,
+          status: f.status,
+          capacity_mw: f.capacity_mw,
+          operator: f.operator,
+          year_commissioned: f.year_commissioned,
+        }))
+        set({ nuclearFacilities: facilities })
+      }
+    } catch (e) {
+      console.error('Failed to fetch nuclear facilities:', e)
+    }
+  },
+
+  // Fetch space weather
+  fetchSpaceWeather: async () => {
+    try {
+      const res = await fetch(`${API_BASE}/space-weather/v1/get-space-weather`)
+      if (res.ok) {
+        const data = await res.json()
+        set({ spaceWeather: data })
+      }
+    } catch (e) {
+      console.error('Failed to fetch space weather:', e)
     }
   },
 
